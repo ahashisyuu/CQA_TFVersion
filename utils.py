@@ -6,6 +6,8 @@ from prettytable import PrettyTable
 from sklearn.model_selection import StratifiedKFold
 from keras.preprocessing.sequence import pad_sequences
 
+from OfficialScorer import metrics
+
 
 class BatchDatasets:
     def __init__(self, train_samples: list, dev_samples: list, max_len, char_max_len,
@@ -27,6 +29,7 @@ class BatchDatasets:
         self.train_label = None
         self.dev_data = None
         self.dev_label = None
+        self.dev_cID = None
 
         if k_fold > 1:  # merge train data and dev data
             self.train_samples += self.dev_samples
@@ -45,11 +48,13 @@ class BatchDatasets:
             self.train_label = self.train_samples[-1]
 
             self.dev_samples = [trans for trans in zip(*self.dev_samples)]
+            self.dev_cID = self.dev_samples[0]
             self.dev_data = self.dev_samples[1:-1]
             self.dev_label = np.asarray(self.dev_samples[-1])
 
         if test_samples is not None:
             self.test_samples = [trans for trans in zip(*self.test_samples)]
+            self.test_cID = self.test_samples[0]
             self.test_data = self.dev_samples[1:-1]
             self.test_label = np.asarray(self.dev_samples[-1])
 
@@ -76,7 +81,6 @@ class BatchDatasets:
     def padding(self, batch_data):
         assert len(batch_data) == 6
         cur_max_len = [self.get_len(e) for e in batch_data[0:3]]*2
-
         return [self.pad_sentence(e, maxlen=l) for e, l in zip(batch_data, cur_max_len)]
 
     def mini_batch_data(self, data, label, batch_size):
@@ -85,7 +89,7 @@ class BatchDatasets:
             batch_train_data = [e[batch_start:batch_start+batch_size]
                                 for e in data]
             batch_train_label = label[batch_start:batch_start+batch_size]
-            yield [self.padding(batch_train_data), batch_train_label]
+            yield self.padding(batch_train_data) + [batch_train_label]
 
     def batch_train_data(self, fold_num=None):
         if self.k_fold > 1:
@@ -118,36 +122,37 @@ class BatchDatasets:
 
 
 def PRF(label: np.ndarray, predict: np.ndarray):
-    matrix = np.zeros((3, 3), dtype=np.int32)
+    categories_num = label.max() + 1
+    matrix = np.zeros((categories_num, categories_num), dtype=np.int32)
 
-    label_array = [(label == i).astype(np.int32) for i in range(3)]
-    predict_array = [(predict == i).astype(np.int32) for i in range(3)]
+    label_array = [(label == i).astype(np.int32) for i in range(categories_num)]
+    predict_array = [(predict == i).astype(np.int32) for i in range(categories_num)]
 
-    for i in range(3):
-        for j in range(3):
+    for i in range(categories_num):
+        for j in range(categories_num):
             matrix[i, j] = label_array[i][predict_array[j] == 1].sum()
 
     # (1) confusion matrix
-    label_sum = matrix.sum(axis=1, keepdims=True)  # shape: (3, 1)
+    label_sum = matrix.sum(axis=1, keepdims=True)  # shape: (ca_num, 1)
     matrix = np.concatenate([matrix, label_sum], axis=1)  # or: matrix = np.c_[matrix, label_sum]
-    predict_sum = matrix.sum(axis=0, keepdims=True)  # shape: (1, 4)
+    predict_sum = matrix.sum(axis=0, keepdims=True)  # shape: (1, ca_num+1)
     matrix = np.concatenate([matrix, predict_sum], axis=0)  # or: matrix = np.r_[matrix, predict_sum]
 
     # (2) accuracy
     temp = 0
-    for i in range(3):
+    for i in range(categories_num):
         temp += matrix[i, i]
-    accuracy = temp / matrix[3, 3]
+    accuracy = temp / matrix[categories_num, categories_num]
 
     # (3) precision (P), recall (R), and F1-score for each label
-    P = np.zeros((3,))
-    R = np.zeros((3,))
-    F = np.zeros((3,))
+    P = np.zeros((categories_num,))
+    R = np.zeros((categories_num,))
+    F = np.zeros((categories_num,))
 
-    for i in range(3):
-        P[i] = matrix[i, i] / matrix[3, i]
-        R[i] = matrix[i, i] / matrix[i, 3]
-        F[i] = 2 * P[i] * R[i] / (P[i] + R[i])
+    for i in range(categories_num):
+        P[i] = matrix[i, i] / matrix[categories_num, i]
+        R[i] = matrix[i, i] / matrix[i, categories_num]
+        F[i] = 2 * P[i] * R[i] / (P[i] + R[i]) if P[i] + R[i] > 0 else 0
 
     # # (4) micro-averaged P, R, F1
     # micro_P = micro_R = micro_F = accuracy
@@ -155,7 +160,7 @@ def PRF(label: np.ndarray, predict: np.ndarray):
     # (5) macro-averaged P, R, F1
     macro_P = P.mean()
     macro_R = R.mean()
-    macro_F = 2 * macro_P * macro_R / (macro_P + macro_R)
+    macro_F = 2 * macro_P * macro_R / (macro_P + macro_R) if macro_P + macro_R else 0
 
     return {'matrix': matrix, 'acc': accuracy,
             'each_prf': [P, R, F], 'macro_prf': [macro_P, macro_R, macro_F]}
@@ -192,5 +197,107 @@ def print_metrics(metrics, metrics_type, save_dir=None):
         with open(os.path.join(save_dir, "{}_logs.log".format(metrics_type)), 'a') as fw:
             [fw.write(line + '\n') for line in lines]
 
+
+def transferring(matrix: np.ndarray):
+    conf_matrix = {}
+    conf_matrix['true']['true'] = matrix[0, 0]
+    conf_matrix['true']['false'] = matrix[0, 1] + matrix[0, 2]
+    conf_matrix['false']['true'] = matrix[1, 0] + matrix[2, 0]
+    conf_matrix['false']['false'] = matrix[1, 1] + matrix[1, 2] + matrix[2, 1] + matrix[2, 2]
+    return conf_matrix
+
+
+def get_pre(eval_id, label, score, reranking_th, ignore_noanswer):
+
+    model_pre = {}
+    for cID, relevant, s in zip(eval_id, label, score):
+        relevant = 'true' if 0 == relevant else 'false'
+        # Process the line from the res file.
+        qid = '_'.join(cID.split('_')[0:-1])
+        if qid not in model_pre:
+            model_pre[qid] = []
+        model_pre[qid].append((relevant, s, cID))
+
+    # Remove questions that contain no correct answer
+    if ignore_noanswer:
+        for qid in model_pre.keys():
+            candidates = model_pre[qid]
+            if all(relevant == "false" for relevant, _, _ in candidates):
+                del model_pre[qid]
+
+    for qid in model_pre:
+        # Sort by model prediction score.
+        pre_sorted = model_pre[qid]
+        max_score = max([score for rel, score, cid in pre_sorted])
+        if max_score >= reranking_th:
+            pre_sorted = sorted(pre_sorted, key=lambda x: x[1], reverse=True)
+
+        model_pre[qid] = [rel for rel, score, aid in pre_sorted]
+
+    return model_pre
+
+
+def eval_reranker(eval_id, label, score, matrix,
+                  th=10,
+                  reranking_th=0.0,
+                  ignore_noanswer=False):
+    conf_matrix = transferring(matrix)
+    model_pre = get_pre(eval_id, label, score,
+                        reranking_th=reranking_th, ignore_noanswer=ignore_noanswer)
+
+    # Calculate standard P, R, F1, Acc
+    acc = 1.0 * (conf_matrix['true']['true'] + conf_matrix['false']['false']) / (
+                conf_matrix['true']['true'] + conf_matrix['false']['false'] + conf_matrix['true']['false'] +
+                conf_matrix['false']['true'])
+    p = 0
+    if (conf_matrix['true']['true'] + conf_matrix['false']['true']) > 0:
+        p = 1.0 * (conf_matrix['true']['true']) / (conf_matrix['true']['true'] + conf_matrix['false']['true'])
+    r = 0
+    if (conf_matrix['true']['true'] + conf_matrix['true']['false']) > 0:
+        r = 1.0 * (conf_matrix['true']['true']) / (conf_matrix['true']['true'] + conf_matrix['true']['false'])
+    f1 = 0
+    if (p + r) > 0:
+        f1 = 2.0 * p * r / (p + r)
+
+    # evaluate SVM
+    prec_model = metrics.recall_of_1(model_pre, th)
+    acc_model = metrics.accuracy(model_pre, th)
+    acc_model1 = metrics.accuracy1(model_pre, th)
+    acc_model2 = metrics.accuracy2(model_pre, th)
+
+    mrr_model = metrics.mrr(model_pre, th)
+    map_model = metrics.map(model_pre, th)
+
+    avg_acc1_model = metrics.avg_acc1(model_pre, th)
+
+    print("")
+    print("*** Official score (MAP for SYS): %5.4f" % map_model)
+    print("")
+    print("******************************")
+    print("*** Classification results ***")
+    print("******************************")
+    print("")
+    print("Acc = %5.4f" % acc)
+    print("P   = %5.4f" % p)
+    print("R   = %5.4f" % r)
+    print("F1  = %5.4f" % f1)
+    print("")
+    print("********************************")
+    print("*** Detailed ranking results ***")
+    print("********************************")
+    print("")
+    print("SYS -- Score for the output of the tested system.")
+    print("")
+    print("%13s" % "SYS")
+    print("MAP   : %5.4f" % map_model)
+    print("AvgRec: %5.4f" % avg_acc1_model)
+    print("MRR   : %6.2f" % mrr_model)
+
+    for i, (p_model, a_model, a_model1, a_model2) in enumerate(
+            zip(prec_model, acc_model, acc_model1, acc_model2), 1):
+        print("REC-1@%02d: %6.2f  ACC@%02d: %6.2f  AC1@%02d: %6.2f  AC2@%02d: %4.0f" % (
+              i, p_model, i, a_model, i, a_model1, i, a_model2))
+    print('----------------------------------------------------------------')
+    print('----------------------------------------------------------------\n')
 
 

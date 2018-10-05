@@ -5,8 +5,8 @@ import logging
 from collections import defaultdict
 from operator import itemgetter
 from optparse import OptionParser
-from .res_file_reader import ResFileReader
-from . import metrics
+from res_file_reader import ResFileReader
+import metrics
 
 logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s', level=logging.INFO)
 
@@ -297,7 +297,7 @@ def main():
     parser.add_option("-t", "--threshold", dest="th", default=10, type=int,
                       help="supply a value for computing Precision up to a given threshold "
                            "[default: %default]", metavar="VALUE")
-    parser.add_option("-r", "--reranking_threshold", dest="reranking_th", default=None, type=float,
+    parser.add_option("-r", "--reranking_threshold", dest="reranking_th", default=0.0, type=float,
                       help="if maximum prediction score for a set of candidates is below this threshold, "
                            "do not re-rank the candiate list."
                            "[default: %default]", metavar="VALUE")

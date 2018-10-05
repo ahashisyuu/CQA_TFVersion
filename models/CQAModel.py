@@ -2,13 +2,13 @@ import os
 import numpy as np
 import tensorflow as tf
 
-from utils import BatchDatasets, PRF, print_metrics
+from utils import BatchDatasets, PRF, print_metrics, eval_reranker
 from tqdm import tqdm
 
 
 class CQAModel:
 
-    def __init__(self, embedding_matrix, char_embed=None):
+    def __init__(self, embedding_matrix, categories_num=3, char_embed=None):
         # session info
         sess_config = tf.ConfigProto()
         sess_config.gpu_options.allow_growth = True
@@ -28,6 +28,7 @@ class CQAModel:
                                                  initializer=tf.constant_initializer(1), trainable=False)
         self.lr = tf.get_variable('lr', shape=[], dtype=tf.float32,
                                   initializer=tf.constant_initializer(0.001), trainable=False)
+        self.categories_num = categories_num
 
         # batch input
         self.QSubject, self.QBody, self.CText, self.cQS, self.cQB, self.cC = self.create_input()
@@ -77,7 +78,7 @@ class CQAModel:
         return qs, qb, c, cqs, cqb, cc
 
     def create_label(self):
-        return tf.placeholder(tf.int32, [None, 3])
+        return tf.placeholder(tf.int32, [None, self.categories_num])
 
     @property
     def lr(self):
@@ -113,7 +114,7 @@ class CQAModel:
     def build_model(self):
         raise NotImplementedError
 
-    def evaluate(self, eva_data, steps_num, eva_type):
+    def evaluate(self, eva_data, steps_num, eva_type, eva_ID=None):
         label = []
         predict = []
         loss = []
@@ -122,7 +123,7 @@ class CQAModel:
                 batch_label = batch_eva_data[-1]
 
                 feed_dict = {inv: array for inv, array in zip(self.input_placeholder, batch_eva_data)}
-                batch_loss, batch_predict = self.sess.run([self.loss, self.predict], feed_dict=feed_dict)
+                batch_loss, batch_predict = self.sess.run([self.loss, self.predict_prob], feed_dict=feed_dict)
 
                 label.append(batch_label.argmax(axis=1))
                 loss.append(batch_loss*batch_label.shape[0])
@@ -135,8 +136,11 @@ class CQAModel:
         loss = np.concatenate(loss)
 
         loss = loss.sum() / steps_num
-        metrics = PRF(label, predict)
+        metrics = PRF(label, predict.argmax(axis=1))
         metrics['loss'] = loss
+
+        if eva_ID is not None:
+            eval_reranker(eva_ID, label, predict[:, 0], metrics['matrix'])
 
         loss_summ = tf.Summary(value=[tf.Summary.Value(
             tag="{}/loss".format(eva_type), simple_value=metrics['loss']), ])
@@ -182,7 +186,8 @@ class CQAModel:
 
             dev_data = batch_dataset.batch_dev_data(dev_batch_size=2*config.batch_size)
             dev_steps = batch_dataset.dev_steps_num
-            val_metrics, summ = self.evaluate(dev_data, dev_steps, 'dev')
+            dev_id = batch_dataset.dev_cID
+            val_metrics, summ = self.evaluate(dev_data, dev_steps, 'dev', dev_id)
             val_metrics['epoch'] = epoch
 
             if val_metrics['loss'] < loss_save:
@@ -227,9 +232,27 @@ class CQAModel:
             else:
                 self.one_train(batch_dataset, saver, writer, config)
 
+    def one_test(self, batch_dataset, config):
+        test_data = batch_dataset.batch_test_data()
+        steps = batch_dataset.test_steps_num
+        cID = batch_dataset.test_cID
+        self.is_train = False
+        test_metrics, _ = self.evaluate(test_data, steps, 'test', cID)
+        print_metrics(test_metrics, 'test')
+
     def test(self, batch_dataset: BatchDatasets, config):
         with self.sess:
+            self.sess.run(tf.global_variables_initializer())
             saver = tf.train.Saver()
+            if config.k_fold > 1:
+                sub_dir = os.listdir(config.model_dir)
+                for name in sub_dir:
+                    path = os.path.join(config.model_dir, name)
+                    saver.restore(self.sess, tf.train.latest_checkpoint(path))
+                    self.one_test(batch_dataset, config)
+            else:
+                saver.restore(self.sess, tf.train.latest_checkpoint(config.model_dir))
+                self.one_test(batch_dataset, config)
 
 
 
