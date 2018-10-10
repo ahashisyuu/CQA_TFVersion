@@ -293,6 +293,7 @@ class CQAModel:
 
             path = os.path.join(config.model_dir, self.__class__.__name__)
             if config.load_best_model and os.path.exists(path):
+                print('------------  load model  ------------')
                 saver.restore(self.sess, tf.train.latest_checkpoint(path))
 
             self.lr = config.lr
