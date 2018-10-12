@@ -28,6 +28,7 @@ class BatchDatasets:
         self.test_steps_num = 0
         self.train_data = None
         self.train_label = None
+        self.cweight = []
         self.dev_data = None
         self.dev_label = None
         self.dev_cID = None
@@ -94,7 +95,21 @@ class BatchDatasets:
             batch_data = [e[batch_start:batch_start+batch_size]
                           for e in data]
             batch_label = label[batch_start:batch_start+batch_size]
+            print(batch_start)
             yield self.padding(batch_data) + [batch_label]
+
+    def compute_class_weight(self, train_label):
+        label = train_label.argmax(axis=1)
+        number = [(label == i).astype('int32').sum() for i in range(self.categories_num)]
+
+        max_num = max(number)
+        min_num = min(number)
+        median = max_num
+        for n in number:
+            if n != max_num and n != min_num:
+                median = n
+
+        return [median/n for n in number]
 
     def batch_train_data(self, batch_size=None, fold_num=None):
         if self.k_fold > 1:
@@ -106,6 +121,7 @@ class BatchDatasets:
             self.dev_cID = self.data_cID[dev_index].tolist()
 
         self.train_steps_num = self.train_label.shape[0]
+        self.cweight = self.compute_class_weight(self.train_label)
 
         batch_size = self.batch_size if batch_size is None else batch_size
         return self.mini_batch_data(self.train_data, self.train_label, batch_size)

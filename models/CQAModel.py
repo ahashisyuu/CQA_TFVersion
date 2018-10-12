@@ -25,6 +25,9 @@ class CQAModel:
                                                  initializer=tf.constant_initializer(1), trainable=False)
         self._lr = tf.get_variable('lr', shape=[], dtype=tf.float32,
                                    initializer=tf.constant_initializer(0.001), trainable=False)
+        self._cweight = tf.get_variable('cweight', dtype=tf.float32,
+                                        initializer=tf.constant([1. for _ in range(args.categories_num)]),
+                                        trainable=False)
         self.args = args
         self.char_num = char_num
 
@@ -61,6 +64,7 @@ class CQAModel:
 
         # computing loss
         with tf.variable_scope('predict'):
+            self.label = tf.multiply(tf.cast(self.label, tf.float32), tf.expand_dims(self._cweight, axis=0))
             losses = tf.nn.softmax_cross_entropy_with_logits_v2(logits=self.output,
                                                                 labels=tf.stop_gradient(self.label))
             self.loss = tf.reduce_mean(losses)
@@ -71,7 +75,7 @@ class CQAModel:
             self.predict = tf.argmax(self.predict_prob, axis=1)
 
         # getting ready for training
-        self.opt = tf.train.AdadeltaOptimizer(learning_rate=self._lr, epsilon=1e-6)
+        self.opt = tf.train.AdamOptimizer(learning_rate=self._lr, epsilon=1e-6)
         grads = self.opt.compute_gradients(self.loss)
         gradients, variables = zip(*grads)
         capped_grads, _ = tf.clip_by_global_norm(gradients, clip_norm=5.0)
@@ -136,6 +140,14 @@ class CQAModel:
 
     def create_label(self):
         return tf.placeholder(tf.int32, [None, self.args.categories_num])
+
+    @property
+    def cweight(self):
+        return self.sess.run(self._cweight)
+
+    @cweight.setter
+    def cweight(self, value):
+        self.sess.run(tf.assign(self._cweight, tf.constant(value, dtype=tf.float32)))
 
     @property
     def lr(self):
@@ -214,17 +226,33 @@ class CQAModel:
     def one_train(self, batch_dataset, saver, writer, config, fold_num=None):
         loss_save = 100
         patience = 0
+        self.lr = config.lr
+        self.dropout = config.dropout
+
+        print('---------------------------------------------')
+        print('process train data')
+        train_data = [batch for batch in batch_dataset.batch_train_data(fold_num=fold_num)]
+        train_steps = batch_dataset.train_steps_num
+        print('---------------------------------------------')
+
+        print('class weight: ', batch_dataset.cweight)
+
+        print('\n---------------------------------------------')
+        print('process dev data')
+        dev_data = [batch for batch in batch_dataset.batch_dev_data(dev_batch_size=2*config.batch_size)]
+        dev_steps = batch_dataset.dev_steps_num
+        dev_id = batch_dataset.dev_cID
+        print('----------------------------------------------\n')
+
         for epoch in range(1, config.epochs + 1):
             print('---------------------------------------')
             print('EPOCH %d' % epoch)
-
-            train_data = batch_dataset.batch_train_data(fold_num=fold_num)
-            train_steps = batch_dataset.train_steps_num
 
             print('the number of samples: %d\n' % train_steps)
 
             print('training model')
             self.is_train = True
+            self.cweight = batch_dataset.cweight
             with tqdm(total=train_steps, ncols=70) as tbar:
                 for batch_train_data in train_data:
                     feed_dict = {inv: array for inv, array in zip(self.input_placeholder, batch_train_data)}
@@ -239,19 +267,13 @@ class CQAModel:
             print('\n---------------------------------------')
             print('\nevaluating model\n')
             self.is_train = False
-
-            # train_data = batch_dataset.batch_train_data(batch_size=2 * config.batch_size, fold_num=fold_num)
-            # train_steps = batch_dataset.train_steps_num
-            #
+            self.cweight = [1., 1., 1.]
             # metrics, summ = self.evaluate(train_data, train_steps, 'train')
             # metrics['epoch'] = epoch
             #
             # for s in summ:
             #     writer.add_summary(s, self.global_step)
 
-            dev_data = batch_dataset.batch_dev_data(dev_batch_size=2 * config.batch_size)
-            dev_steps = batch_dataset.dev_steps_num
-            dev_id = batch_dataset.dev_cID
             val_metrics, summ = self.evaluate(dev_data, dev_steps, 'dev', dev_id)
             val_metrics['epoch'] = epoch
 
@@ -296,8 +318,6 @@ class CQAModel:
                 print('------------  load model  ------------')
                 saver.restore(self.sess, tf.train.latest_checkpoint(path))
 
-            self.lr = config.lr
-            self.dropout = config.dropout
             if config.k_fold > 1:
                 for i in range(config.k_fold):
                     self.one_train(batch_dataset, saver, writer, config, i)
@@ -305,10 +325,11 @@ class CQAModel:
                 self.one_train(batch_dataset, saver, writer, config)
 
     def one_test(self, batch_dataset, config):
-        test_data = batch_dataset.batch_test_data(2 * config.batch_size)
+        test_data = [batch for batch in batch_dataset.batch_test_data(2 * config.batch_size)]
         steps = batch_dataset.test_steps_num
         cID = batch_dataset.test_cID
         self.is_train = False
+        self.cweight = [1., 1., 1.]
         test_metrics, _ = self.evaluate(test_data, steps, 'test', cID)
         print_metrics(test_metrics, 'test', categories_num=self.args.categories_num)
 

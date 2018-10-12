@@ -5,7 +5,16 @@
 import tensorflow as tf
 
 
-# inpa,inpb (b,m,d) maska,maskb (b,m,1)
+def process(base, d, attn_mask, tail, ps, ps_mask):
+    interaction = dense(base, d, scope='interaction')  # (b,m,n,d)
+    logits = 10.0 * tf.tanh(interaction / 10.0) + (1 - attn_mask) * (-1e30)
+
+    attn_score = tf.nn.softmax(logits, 2) * attn_mask
+    attn_result = tf.reduce_sum(attn_score * tail, 2)  # (b,m,d)
+    fusion_gate = dense(tf.concat([ps, attn_result], -1), d, tf.sigmoid, scope='fusion_gate') * ps_mask
+    return (fusion_gate * ps + (1 - fusion_gate) * attn_result) * ps_mask
+
+
 def ps_pb_interaction(ps, pb, ps_mask, pb_mask, keep_prob, scope):
     with tf.variable_scope(scope):
         b, m, n, d = tf.shape(ps)[0], tf.shape(ps)[1], tf.shape(pb)[1], ps.get_shape().as_list()[2]
@@ -15,15 +24,11 @@ def ps_pb_interaction(ps, pb, ps_mask, pb_mask, keep_prob, scope):
         tail = tf.tile(tf.expand_dims(pb, 1), [1, m, 1, 1])  # (b,1,n,d)
         parallel = head * tf.reduce_sum(head * tail, -1, True) / (tf.reduce_sum(head * head, -1, True) + 1e-5)
         orthogonal = tail - parallel
-        base = parallel if scope == 'parallel' else orthogonal
-
-        interaction = dense(base, d, scope='interaction')  # (b,m,n,d)
-        logits = 10.0 * tf.tanh(interaction / 10.0) + (1 - attn_mask) * (-1e30)
-
-        attn_score = tf.nn.softmax(logits, 2) * attn_mask
-        attn_result = tf.reduce_sum(attn_score * tail, 2)  # (b,m,d)
-        fusion_gate = dense(tf.concat([ps, attn_result], -1), d, tf.sigmoid, scope='fusion_gate') * ps_mask
-        return (fusion_gate * ps + (1 - fusion_gate) * attn_result) * ps_mask
+        with tf.variable_scope('para'):
+            Spara = process(parallel, d, attn_mask, tail, ps, ps_mask)
+        with tf.variable_scope('orth'):
+            Sorth = process(orthogonal, d, attn_mask, tail, ps, ps_mask)
+        return Spara, Sorth
 
 
 # inpa,inpb (b,m,d) maska,maskb (b,m,1)
@@ -35,8 +40,6 @@ def pq_interaction(ps, qt, ps_mask, qt_mask, keep_prob, scope):
         head = tf.tile(tf.expand_dims(ps, 2), [1, 1, n, 1])  # (b,m,1,d)
         tail = tf.tile(tf.expand_dims(qt, 1), [1, m, 1, 1])  # (b,1,n,d)
         interaction = dense(tf.concat([head, tail], -1), d, scope='interaction')  # (b,m,n,d)
-        # interaction = tf.reduce_sum(head*tail, -1, True)
-        # interaction = tf.reduce_sum(dense(head, d, scope='interaction')*tail, -1, True)
         logits = 5.0 * tf.tanh(interaction / 5.0) + (1 - attn_mask) * (-1e30)
         atta_score = tf.nn.softmax(logits, 2) * attn_mask
         atta_result = tf.reduce_sum(atta_score * tail, 2)  # (b,m,d)
@@ -46,13 +49,6 @@ def pq_interaction(ps, qt, ps_mask, qt_mask, keep_prob, scope):
 
         cata = tf.concat([ps, atta_result], -1) * ps_mask
         catb = tf.concat([qt, attb_result], -1) * qt_mask
-        # suba = (ps - atta_result) * (ps - atta_result) * ps_mask
-        # subb = (qt - attb_result) * (qt - attb_result) * qt_mask
-        # mula = ps * atta_result * ps_mask
-        # mulb = qt * attb_result * qt_mask
-        # nna = dense(tf.concat([suba, mula], -1), d, tf.nn.elu, scope='nna') * ps_mask
-        # nnb = dense(tf.concat([subb, mulb], -1), d, tf.nn.elu, scope='nnb') * qt_mask
-        # # return tf.concat([suba, mula], -1)*ps_mask, tf.concat([subb, mulb], -1)*qt_mask
         return cata, catb
 
 
@@ -60,7 +56,6 @@ def source2token(rep_tensor, rep_mask, keep_prob, scope):
     with tf.variable_scope(scope):
         ivec = rep_tensor.get_shape().as_list()[2]
         map1 = dense(rep_tensor, ivec, tf.nn.elu, keep_prob, 'map1') * rep_mask  # (b,n,d)
-        map2 = dense(rep_tensor, ivec, tf.identity, keep_prob, 'map2') * rep_mask  # (b,n,d)
         map2_masked = map1 + (1 - rep_mask) * (-1e30)
         soft = tf.nn.softmax(map2_masked, 1) * rep_mask  # bs,sl,vec
         return tf.reduce_sum(soft * rep_tensor, 1)  # bs, vec
@@ -89,10 +84,9 @@ def multilayer_highway(inp, out_size, layers, activation=tf.nn.elu, keep_prob=1.
 
 def text_cnn(input, filter_sizes, filter_num):
     input_expand = tf.expand_dims(input, -1)  # (b,m,d,1)
-    embedding_size = tf.shape(input)[2]
     output_list = []
     for filter_size in filter_sizes:
-        with tf.variable_scope("conv{}".format(filter_size)):
+        with tf.variable_scope("conv{}".format(filter_size), reuse=True):
             filter_shape = tf.convert_to_tensor([filter_size, input.get_shape().as_list()[2], 1, filter_num])
             filter = tf.Variable(tf.truncated_normal(filter_shape, stddev=0.1),
                                  name='filter')  # tensorflow 需要trainable variables 拥有确定的shape

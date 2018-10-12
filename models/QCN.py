@@ -22,15 +22,18 @@ class QCN(CQAModel):
             pb_cemb = tf.nn.embedding_lookup(char_mat, pb_fchar)
             qt_cemb = tf.nn.embedding_lookup(char_mat, qt_fchar)
 
-            ps_cmask = tf.expand_dims(tf.sequence_mask(self.cQS_len, tf.shape(ps_fchar)[1], tf.float32), -1)
-            pb_cmask = tf.expand_dims(tf.sequence_mask(self.cQB_len, tf.shape(pb_fchar)[1], tf.float32), -1)
-            qt_cmask = tf.expand_dims(tf.sequence_mask(self.cC_len, tf.shape(qt_fchar)[1], tf.float32), -1)
+            # ps_cmask = tf.expand_dims(tf.sequence_mask(self.cQS_len, tf.shape(ps_fchar)[1], tf.float32), -1)
+            # pb_cmask = tf.expand_dims(tf.sequence_mask(self.cQB_len, tf.shape(pb_fchar)[1], tf.float32), -1)
+            # qt_cmask = tf.expand_dims(tf.sequence_mask(self.cC_len, tf.shape(qt_fchar)[1], tf.float32), -1)
 
             with tf.variable_scope("char") as scope:
-                ps_cinp = source2token(ps_cemb, ps_cmask, self.dropout_keep_prob, 'char')
-                scope.reuse_variables()
-                pb_cinp = source2token(pb_cemb, pb_cmask, self.dropout_keep_prob, 'char')
-                qt_cinp = source2token(qt_cemb, qt_cmask, self.dropout_keep_prob, 'char')
+                # ps_cinp = source2token(ps_cemb, ps_cmask, self.dropout_keep_prob, 'char')
+                # scope.reuse_variables()
+                # pb_cinp = source2token(pb_cemb, pb_cmask, self.dropout_keep_prob, 'char')
+                # qt_cinp = source2token(qt_cemb, qt_cmask, self.dropout_keep_prob, 'char')
+                ps_cinp = text_cnn(ps_cemb, [2, 3, 4, 5], 25)
+                pb_cinp = text_cnn(pb_cemb, [2, 3, 4, 5], 25)
+                qt_cinp = text_cnn(qt_cemb, [2, 3, 4, 5], 25)
 
             with tf.variable_scope("input") as scope:
                 QS = tf.concat([QS, tf.reshape(ps_cinp, [tf.shape(self.cQS)[0], -1, 100])], -1)
@@ -38,8 +41,10 @@ class QCN(CQAModel):
                 CT = tf.concat([CT, tf.reshape(qt_cinp, [tf.shape(self.cC)[0], -1, 100])], -1)
                 QS = multilayer_highway(QS, 300, 1, tf.nn.elu, self.dropout_keep_prob, 'ps_input')
                 QB = multilayer_highway(QB, 300, 1, tf.nn.elu, self.dropout_keep_prob, 'pb_input')
-                CT = dense(CT, 300, tf.nn.tanh, self.dropout_keep_prob, 'qt_input')
-        return [QS, QB, CT]
+
+                # sigma = dense(CT, 300, tf.nn.tanh, self.dropout_keep_prob, 'qi_input_sigma')
+                CT_ = dense(CT, 300, tf.nn.tanh, self.dropout_keep_prob, 'qt_input')
+        return [QS, QB, CT_]
 
     def build_model(self):
         with tf.variable_scope('QC_interaction'):
@@ -47,8 +52,7 @@ class QCN(CQAModel):
             self.QB_mask = tf.expand_dims(self.QB_mask, -1)
             self.CT_mask = tf.expand_dims(self.CT_mask, -1)
 
-            para = ps_pb_interaction(self.QS, self.QB, self.QS_mask, self.QB_mask, self.dropout_keep_prob, 'parallel')
-            orth = ps_pb_interaction(self.QS, self.QB, self.QS_mask, self.QB_mask, self.dropout_keep_prob, 'orthogonal')
+            para, orth = ps_pb_interaction(self.QS, self.QB, self.QS_mask, self.QB_mask, self.dropout_keep_prob, 'parallel')
             p = tf.concat([para, orth], -1)
             q = tf.layers.dense(self.CT, 2 * 300, tf.nn.tanh, name='qt_tanh') * tf.layers.dense(
                 self.CT, 2 * 300, tf.nn.sigmoid, name='qt_sigmoid')
