@@ -86,7 +86,7 @@ def text_cnn(input, filter_sizes, filter_num):
     input_expand = tf.expand_dims(input, -1)  # (b,m,d,1)
     output_list = []
     for filter_size in filter_sizes:
-        with tf.variable_scope("conv{}".format(filter_size), reuse=True):
+        with tf.variable_scope("conv{}".format(filter_size), reuse=tf.AUTO_REUSE):
             filter_shape = tf.convert_to_tensor([filter_size, input.get_shape().as_list()[2], 1, filter_num])
             filter = tf.Variable(tf.truncated_normal(filter_shape, stddev=0.1),
                                  name='filter')  # tensorflow 需要trainable variables 拥有确定的shape

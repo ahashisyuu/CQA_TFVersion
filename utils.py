@@ -95,7 +95,7 @@ class BatchDatasets:
             batch_data = [e[batch_start:batch_start+batch_size]
                           for e in data]
             batch_label = label[batch_start:batch_start+batch_size]
-            print(batch_start)
+
             yield self.padding(batch_data) + [batch_label]
 
     def compute_class_weight(self, train_label):

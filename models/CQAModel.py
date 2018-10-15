@@ -64,7 +64,7 @@ class CQAModel:
 
         # computing loss
         with tf.variable_scope('predict'):
-            self.label = tf.multiply(tf.cast(self.label, tf.float32), tf.expand_dims(self._cweight, axis=0))
+            # self.label = tf.multiply(tf.cast(self.label, tf.float32), tf.expand_dims(self._cweight, axis=0))
             losses = tf.nn.softmax_cross_entropy_with_logits_v2(logits=self.output,
                                                                 labels=tf.stop_gradient(self.label))
             self.loss = tf.reduce_mean(losses)
@@ -195,10 +195,8 @@ class CQAModel:
         with tqdm(total=steps_num, ncols=70) as tbar:
             for batch_eva_data in eva_data:
                 batch_label = batch_eva_data[-1]
-
                 feed_dict = {inv: array for inv, array in zip(self.input_placeholder, batch_eva_data)}
                 batch_loss, batch_predict = self.sess.run([self.loss, self.predict_prob], feed_dict=feed_dict)
-
                 label.append(batch_label.argmax(axis=1))
                 loss.append(batch_loss * batch_label.shape[0])
                 predict.append(batch_predict)

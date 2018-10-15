@@ -5,13 +5,14 @@ import pickle as pkl
 from config import Config
 from preprocessing.preprocessing import preprocessing
 from utils import BatchDatasets
-from models.QCN import QCN
+from models import model_dict
 
 
 config = Config()
 parser = argparse.ArgumentParser()
 
 parser.add_argument('--mode', type=str, default='train')
+parser.add_argument('--model', type=str, default='RandomModel')
 parser.add_argument('--train_list', type=list, default=['15train'])
 parser.add_argument('--dev_list', type=list, default=['15dev'])
 parser.add_argument('--test_list', type=list, default=['15test'])
@@ -61,7 +62,7 @@ def run(args):
                                  batch_size=args.batch_size, k_fold=args.k_fold, categories_num=args.categories_num,
                                  train_samples=train_samples, dev_samples=dev_samples, test_samples=test_samples)
 
-        model = QCN(embedding_matrix=embedding_matrix, args=args, char_num=len(char2index))
+        model = model_dict[args.model](embedding_matrix=embedding_matrix, args=args, char_num=len(char2index))
 
         if args.mode == 'train':
             model.train(all_data, args)
