@@ -19,7 +19,9 @@ parser.add_argument('--test_list', type=list, default=['15test'])
 
 parser.add_argument('--lr', type=float, default=config.lr)
 parser.add_argument('--dropout', type=float, default=config.dropout)
-parser.add_argument('--max_len', type=int, default=config.max_len)
+parser.add_argument('--qs_max_len', type=int, default=config.qs_max_len)
+parser.add_argument('--qb_max_len', type=int, default=config.qb_max_len)
+parser.add_argument('--ct_max_len', type=int, default=config.ct_max_len)
 parser.add_argument('--char_max_len', type=int, default=config.char_max_len)
 parser.add_argument('--epochs', type=int, default=config.epochs)
 parser.add_argument('--batch_size', type=int, default=config.batch_size)
@@ -58,7 +60,8 @@ def run(args):
         dev_samples = [data[k + '.xml'] for k in args.dev_list]
         test_samples = [data[k + '.xml'] for k in args.test_list]
 
-        all_data = BatchDatasets(args.max_len, args.char_max_len, need_shuffle=args.need_shuffle,
+        all_data = BatchDatasets(args.qs_max_len, args.qb_max_len, args.ct_max_len, args.char_max_len,
+                                 need_shuffle=args.need_shuffle, use_char_level=args.use_char_level,
                                  batch_size=args.batch_size, k_fold=args.k_fold, categories_num=args.categories_num,
                                  train_samples=train_samples, dev_samples=dev_samples, test_samples=test_samples)
 

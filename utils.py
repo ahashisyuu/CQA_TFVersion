@@ -9,15 +9,19 @@ from OfficialScorer import metrics
 
 
 class BatchDatasets:
-    def __init__(self,  max_len, char_max_len,
-                 need_shuffle=False, batch_size=64, k_fold=0, categories_num=3,
+    def __init__(self,  qs_max_len, qb_max_len, ct_max_len, char_max_len,
+                 need_shuffle=False, use_char_level=True, batch_size=64, k_fold=0, categories_num=3,
                  train_samples: list=None, dev_samples: list=None, test_samples=None):
         self.train_samples = self.processing_sample(train_samples)
         self.dev_samples = self.processing_sample(dev_samples)
         self.test_samples = self.processing_sample(test_samples)
-        self.max_len = max_len
+        self.qs_max_len = qs_max_len
+        self.qb_max_len = qb_max_len
+        self.ct_max_len = ct_max_len
+        self.length = [self.qs_max_len, self.qb_max_len, self.ct_max_len]
         self.char_max_len = char_max_len
         self.need_shuffle = need_shuffle
+        self.use_char_level = use_char_level
         self.batch_size = batch_size
         self.train_samples_num = len(self.train_samples)
         self.dev_samples_num = len(self.dev_samples)
@@ -77,8 +81,8 @@ class BatchDatasets:
     def shuffle(self):
         random.shuffle(self.train_samples)
 
-    def get_len(self, e):
-        return min(len(max(e, key=len)), self.max_len)
+    def get_len(self, e, max_len):
+        return min(len(max(e, key=len)), max_len)
 
     @staticmethod
     def pad_sentence(e, maxlen):
@@ -86,7 +90,11 @@ class BatchDatasets:
 
     def padding(self, batch_data):
         assert len(batch_data) == 6
-        cur_max_len = [self.get_len(e) for e in batch_data[0:3]]*2
+        cur_max_len = [self.get_len(e, self.length[i]) for i, e in enumerate(batch_data[0:3])]
+        if self.use_char_level:
+            cur_max_len *= 2
+        else:
+            batch_data = batch_data[:3]
         return [self.pad_sentence(e, maxlen=l) for e, l in zip(batch_data, cur_max_len)]
 
     def mini_batch_data(self, data, label, batch_size):

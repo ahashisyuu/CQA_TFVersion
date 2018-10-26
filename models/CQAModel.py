@@ -1,4 +1,6 @@
 import os
+import random
+
 import numpy as np
 import tensorflow as tf
 
@@ -8,11 +10,14 @@ from tqdm import tqdm
 
 class CQAModel:
 
-    def __init__(self, embedding_matrix, args, char_num=128):
+    def __init__(self, embedding_matrix, args, char_num=128, seed=1):
         # session info
         sess_config = tf.ConfigProto()
         sess_config.gpu_options.allow_growth = True
         self.sess = tf.Session(config=sess_config)
+        seed = random.randint(1, 600)
+        print(seed)
+        tf.set_random_seed(seed)
 
         # hyper parameters and neccesary info
         self._is_train = tf.get_variable('is_train', shape=[], dtype=tf.bool, trainable=False)
@@ -25,14 +30,14 @@ class CQAModel:
                                                  initializer=tf.constant_initializer(1), trainable=False)
         self._lr = tf.get_variable('lr', shape=[], dtype=tf.float32,
                                    initializer=tf.constant_initializer(0.001), trainable=False)
-        self._cweight = tf.get_variable('cweight', dtype=tf.float32,
-                                        initializer=tf.constant([1. for _ in range(args.categories_num)]),
-                                        trainable=False)
+        # self._cweight = tf.get_variable('cweight', dtype=tf.float32,
+        #                                 initializer=tf.constant([1. for _ in range(args.categories_num)]),
+        #                                 trainable=False)
         self.args = args
         self.char_num = char_num
 
         # batch input
-        self.QSubject, self.QBody, self.CText, self.cQS, self.cQB, self.cC = self.create_input()
+        self.inputs = self.QSubject, self.QBody, self.CText, self.cQS, self.cQB, self.cC = self.create_input()
 
         # preparing mask and length info
         self.QS_mask = tf.cast(tf.cast(self.QSubject, tf.bool), tf.float32)
@@ -46,12 +51,13 @@ class CQAModel:
         self.QB_maxlen = tf.reduce_max(self.QB_len)
         self.CT_maxlen = tf.reduce_max(self.CT_len)
 
-        self.cQS_len = tf.reshape(tf.reduce_sum(
-            tf.cast(tf.cast(self.cQS, tf.bool), tf.int32), axis=2), [-1])
-        self.cQB_len = tf.reshape(tf.reduce_sum(
-            tf.cast(tf.cast(self.cQB, tf.bool), tf.int32), axis=2), [-1])
-        self.cC_len = tf.reshape(tf.reduce_sum(
-            tf.cast(tf.cast(self.cC, tf.bool), tf.int32), axis=2), [-1])
+        if self.args.use_char_level:
+            self.cQS_len = tf.reshape(tf.reduce_sum(
+                tf.cast(tf.cast(self.cQS, tf.bool), tf.int32), axis=2), [-1])
+            self.cQB_len = tf.reshape(tf.reduce_sum(
+                tf.cast(tf.cast(self.cQB, tf.bool), tf.int32), axis=2), [-1])
+            self.cC_len = tf.reshape(tf.reduce_sum(
+                tf.cast(tf.cast(self.cC, tf.bool), tf.int32), axis=2), [-1])
 
         # embedding word vector and char vector
         self.QS, self.QB, self.CT = self.embedding()
@@ -65,14 +71,16 @@ class CQAModel:
         # computing loss
         with tf.variable_scope('predict'):
             # self.label = tf.multiply(tf.cast(self.label, tf.float32), tf.expand_dims(self._cweight, axis=0))
+
+            self.predict_prob = tf.nn.softmax(self.output, axis=1)
+            # self.predict = tf.argmax(self.predict_prob, axis=1)
             losses = tf.nn.softmax_cross_entropy_with_logits_v2(logits=self.output,
                                                                 labels=tf.stop_gradient(self.label))
+            # losses = self.weight_cross_entropy_with_logits(self.predict_prob, self.label)
             self.loss = tf.reduce_mean(losses)
             if self.args.l2_weight != 0:
                 for v in tf.trainable_variables():
                     self.loss += self.args.l2_weight * tf.nn.l2_loss(v)
-            self.predict_prob = tf.nn.softmax(self.output, axis=1)
-            self.predict = tf.argmax(self.predict_prob, axis=1)
 
         # getting ready for training
         self.opt = tf.train.AdamOptimizer(learning_rate=self._lr, epsilon=1e-6)
@@ -82,19 +90,29 @@ class CQAModel:
         self.train_op = self.opt.apply_gradients(zip(capped_grads, variables),
                                                  global_step=self._global_step)
 
-        self.input_placeholder = [self.QSubject, self.QBody, self.CText, self.cQS, self.cQB, self.cC, self.label]
+        self.input_placeholder = [inp for inp in self.inputs if inp is not None] + [self.label]
 
-    @staticmethod
-    def create_input():
+    def weight_cross_entropy_with_logits(self, logits, labels, weights=[1, 5, 1]):
+        # labels = tf.stop_gradient(labels)
+        labels = tf.cast(labels, dtype=tf.float32)
+        self.mul = labels * tf.log(logits)
+        self.mul2 = tf.multiply(self.mul, weights)
+        return -tf.reduce_sum(self.mul2, reduction_indices=[1])
+
+    def create_input(self):
         qs = tf.placeholder(tf.int32, [None, None])
         qb = tf.placeholder(tf.int32, [None, None])
         c = tf.placeholder(tf.int32, [None, None])
+        inputs = [qs, qb, c]
 
-        cqs = tf.placeholder(tf.int32, [None, None, None])
-        cqb = tf.placeholder(tf.int32, [None, None, None])
-        cc = tf.placeholder(tf.int32, [None, None, None])
-
-        return qs, qb, c, cqs, cqb, cc
+        if self.args.use_char_level:
+            cqs = tf.placeholder(tf.int32, [None, None, None])
+            cqb = tf.placeholder(tf.int32, [None, None, None])
+            cc = tf.placeholder(tf.int32, [None, None, None])
+            inputs += [cqs, cqb, cc]
+        else:
+            inputs += [None] * 3
+        return inputs
 
     def embedding(self):
         # word embedding
@@ -106,9 +124,9 @@ class CQAModel:
             embedded = [QS, QB, CT]
 
             if self.args.use_char_level:
-                with tf.variable_scope('char'):
-                    char_mat = tf.get_variable('char_mat',
-                                               initializer=tf.random_normal((self.char_num + 1, self.args.char_dim)))
+                with tf.variable_scope('char', initializer=tf.glorot_uniform_initializer()):
+                    char_mat = tf.get_variable('char_mat', shape=(self.char_num + 1, self.args.char_dim),
+                                               initializer=tf.glorot_uniform_initializer())
                     N = tf.shape(self.cQS)[0]
                     cQS = tf.reshape(tf.nn.embedding_lookup(char_mat, self.cQS),
                                      [N*self.QS_maxlen, self.args.char_max_len, self.args.char_dim])
@@ -117,7 +135,7 @@ class CQAModel:
                     cC = tf.reshape(tf.nn.embedding_lookup(char_mat, self.cC),
                                     [N * self.CT_maxlen, self.args.char_max_len, self.args.char_dim])
 
-                    char_hidden = 100
+                    char_hidden = 8
                     cell_fw = tf.nn.rnn_cell.GRUCell(char_hidden)
                     cell_bw = tf.nn.rnn_cell.GRUCell(char_hidden)
 
@@ -205,7 +223,6 @@ class CQAModel:
 
         label = np.concatenate(label, axis=0)
         predict = np.concatenate(predict, axis=0)
-
         loss = sum(loss) / steps_num
         metrics = PRF(label, predict.argmax(axis=1))
         metrics['loss'] = loss
@@ -241,6 +258,7 @@ class CQAModel:
         dev_steps = batch_dataset.dev_steps_num
         dev_id = batch_dataset.dev_cID
         print('----------------------------------------------\n')
+        # print(list(zip(dev_data[0][0], dev_data[0][-1])))
 
         for epoch in range(1, config.epochs + 1):
             print('---------------------------------------')
@@ -250,7 +268,7 @@ class CQAModel:
 
             print('training model')
             self.is_train = True
-            self.cweight = batch_dataset.cweight
+            # self.cweight = batch_dataset.cweight
             with tqdm(total=train_steps, ncols=70) as tbar:
                 for batch_train_data in train_data:
                     feed_dict = {inv: array for inv, array in zip(self.input_placeholder, batch_train_data)}
@@ -265,7 +283,7 @@ class CQAModel:
             print('\n---------------------------------------')
             print('\nevaluating model\n')
             self.is_train = False
-            self.cweight = [1., 1., 1.]
+            # self.cweight = [1., 1., 1.]
             # metrics, summ = self.evaluate(train_data, train_steps, 'train')
             # metrics['epoch'] = epoch
             #
@@ -302,7 +320,6 @@ class CQAModel:
 
             # print_metrics(metrics, 'train', path, categories_num=self.args.categories_num)
             print_metrics(val_metrics, 'val', path, categories_num=self.args.categories_num)
-
             saver.save(self.sess, filename)
 
     def train(self, batch_dataset: BatchDatasets, config):
@@ -319,6 +336,7 @@ class CQAModel:
             if config.k_fold > 1:
                 for i in range(config.k_fold):
                     self.one_train(batch_dataset, saver, writer, config, i)
+                    tf.reset_default_graph()
             else:
                 self.one_train(batch_dataset, saver, writer, config)
 

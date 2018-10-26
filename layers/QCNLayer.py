@@ -91,7 +91,7 @@ def text_cnn(input, filter_sizes, filter_num):
             filter = tf.Variable(tf.truncated_normal(filter_shape, stddev=0.1),
                                  name='filter')  # tensorflow 需要trainable variables 拥有确定的shape
             conv = tf.nn.conv2d(input_expand, filter, [1, 1, 1, 1], 'VALID', name='conv')
-            hidden = tf.nn.elu(conv + tf.Variable(tf.constant(0.1, shape=[filter_num])))
+            hidden = tf.nn.relu(conv + tf.Variable(tf.constant(0.1, shape=[filter_num])))
             pooling = tf.reduce_max(hidden, 1, True)  # tf.nn.max_pool 需要ksize是int
             output_list.append(tf.squeeze(pooling, [1, 2]))
     return tf.concat(output_list, 1)
