@@ -12,7 +12,7 @@ config = Config()
 parser = argparse.ArgumentParser()
 
 parser.add_argument('--mode', type=str, default='train')
-parser.add_argument('--model', type=str, default='RandomModel')
+parser.add_argument('--model', type=str, default='Baseline')
 parser.add_argument('--train_list', type=list, default=['15train'])
 parser.add_argument('--dev_list', type=list, default=['15dev'])
 parser.add_argument('--test_list', type=list, default=['15test'])

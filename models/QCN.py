@@ -11,30 +11,32 @@ class QCN(CQAModel):
             QB = tf.nn.embedding_lookup(self.word_mat, self.QBody)
             CT = tf.nn.embedding_lookup(self.word_mat, self.CText)
 
-            char_mat = tf.get_variable('char_mat', shape=(self.char_num + 1, self.args.char_dim),
-                                       initializer=tf.glorot_uniform_initializer())
+            if self.args.use_char_level:
+                char_mat = tf.get_variable('char_mat', shape=(self.char_num + 1, self.args.char_dim),
+                                           initializer=tf.glorot_uniform_initializer())
 
-            ps_fchar = tf.reshape(self.cQS, [-1, tf.shape(self.cQS)[2]])  # (bm,w)
-            pb_fchar = tf.reshape(self.cQB, [-1, tf.shape(self.cQB)[2]])
-            qt_fchar = tf.reshape(self.cC, [-1, tf.shape(self.cC)[2]])
+                ps_fchar = tf.reshape(self.cQS, [-1, tf.shape(self.cQS)[2]])  # (bm,w)
+                pb_fchar = tf.reshape(self.cQB, [-1, tf.shape(self.cQB)[2]])
+                qt_fchar = tf.reshape(self.cC, [-1, tf.shape(self.cC)[2]])
 
-            ps_cemb = tf.nn.embedding_lookup(char_mat, ps_fchar)     # (bm,w,d)->(bm,d)->(b,m,d)
-            pb_cemb = tf.nn.embedding_lookup(char_mat, pb_fchar)
-            qt_cemb = tf.nn.embedding_lookup(char_mat, qt_fchar)
+                ps_cemb = tf.nn.embedding_lookup(char_mat, ps_fchar)  # (bm,w,d)->(bm,d)->(b,m,d)
+                pb_cemb = tf.nn.embedding_lookup(char_mat, pb_fchar)
+                qt_cemb = tf.nn.embedding_lookup(char_mat, qt_fchar)
 
-            with tf.variable_scope("char") as scope:
-                ps_cinp = text_cnn(ps_cemb, [1, 2, 3, 4, 5, 6], 50)
-                pb_cinp = text_cnn(pb_cemb, [1, 2, 3, 4, 5, 6], 50)
-                qt_cinp = text_cnn(qt_cemb, [1, 2, 3, 4, 5, 6], 50)
+                with tf.variable_scope("char") as scope:
+                    ps_cinp = text_cnn(ps_cemb, [1, 2, 3, 4, 5, 6], 50)
+                    pb_cinp = text_cnn(pb_cemb, [1, 2, 3, 4, 5, 6], 50)
+                    qt_cinp = text_cnn(qt_cemb, [1, 2, 3, 4, 5, 6], 50)
 
-            with tf.variable_scope("input") as scope:
-                QS = tf.concat([QS, tf.reshape(ps_cinp, [tf.shape(self.cQS)[0], -1, 300])], -1)
-                QB = tf.concat([QB, tf.reshape(pb_cinp, [tf.shape(self.cQB)[0], -1, 300])], -1)
-                CT = tf.concat([CT, tf.reshape(qt_cinp, [tf.shape(self.cC)[0], -1, 300])], -1)
-                QS = multilayer_highway(QS, 300, 1, tf.nn.elu, self.dropout_keep_prob, 'ps_input')
-                QB = multilayer_highway(QB, 300, 1, tf.nn.elu, self.dropout_keep_prob, 'pb_input')
+                with tf.variable_scope("input") as scope:
+                    QS = tf.concat([QS, tf.reshape(ps_cinp, [tf.shape(self.cQS)[0], -1, 300])], -1)
+                    QB = tf.concat([QB, tf.reshape(pb_cinp, [tf.shape(self.cQB)[0], -1, 300])], -1)
+                    CT = tf.concat([CT, tf.reshape(qt_cinp, [tf.shape(self.cC)[0], -1, 300])], -1)
 
-                CT = dense(CT, 300, tf.nn.tanh, self.dropout_keep_prob, 'qt_input')
+            QS = multilayer_highway(QS, 300, 1, tf.nn.elu, self.dropout_keep_prob, 'ps_input')
+            QB = multilayer_highway(QB, 300, 1, tf.nn.elu, self.dropout_keep_prob, 'pb_input')
+
+            CT = dense(CT, 300, tf.nn.tanh, self.dropout_keep_prob, 'qt_input')
         return [QS, QB, CT]
 
     def build_model(self):

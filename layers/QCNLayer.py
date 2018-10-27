@@ -18,6 +18,8 @@ def process(base, d, attn_mask, tail, ps, ps_mask):
 def ps_pb_interaction(ps, pb, ps_mask, pb_mask, keep_prob, scope):
     with tf.variable_scope(scope):
         b, m, n, d = tf.shape(ps)[0], tf.shape(ps)[1], tf.shape(pb)[1], ps.get_shape().as_list()[2]
+
+        print(b, m, n, d)
         attn_mask = tf.expand_dims(ps_mask * tf.reshape(pb_mask, [b, 1, n]), -1)  # (b,m,n,1)
 
         head = tf.tile(tf.expand_dims(ps, 2), [1, 1, n, 1])  # (b,m,1,d)

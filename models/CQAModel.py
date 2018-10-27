@@ -6,6 +6,7 @@ import tensorflow as tf
 
 from utils import BatchDatasets, PRF, print_metrics, eval_reranker
 from tqdm import tqdm
+from layers.BiGRU import BiGRU
 
 
 class CQAModel:
@@ -17,7 +18,7 @@ class CQAModel:
         self.sess = tf.Session(config=sess_config)
         seed = random.randint(1, 600)
         print(seed)
-        tf.set_random_seed(seed)
+        tf.set_random_seed(134)
 
         # hyper parameters and neccesary info
         self._is_train = tf.get_variable('is_train', shape=[], dtype=tf.bool, trainable=False)
@@ -35,6 +36,7 @@ class CQAModel:
         #                                 trainable=False)
         self.args = args
         self.char_num = char_num
+        self.N = None
 
         # batch input
         self.inputs = self.QSubject, self.QBody, self.CText, self.cQS, self.cQB, self.cC = self.create_input()
@@ -50,6 +52,8 @@ class CQAModel:
         self.QS_maxlen = tf.reduce_max(self.QS_len)
         self.QB_maxlen = tf.reduce_max(self.QB_len)
         self.CT_maxlen = tf.reduce_max(self.CT_len)
+
+        self.N = self.QS_mask.get_shape()[0]
 
         if self.args.use_char_level:
             self.cQS_len = tf.reshape(tf.reduce_sum(
@@ -92,12 +96,12 @@ class CQAModel:
 
         self.input_placeholder = [inp for inp in self.inputs if inp is not None] + [self.label]
 
-    def weight_cross_entropy_with_logits(self, logits, labels, weights=[1, 5, 1]):
-        # labels = tf.stop_gradient(labels)
-        labels = tf.cast(labels, dtype=tf.float32)
-        self.mul = labels * tf.log(logits)
-        self.mul2 = tf.multiply(self.mul, weights)
-        return -tf.reduce_sum(self.mul2, reduction_indices=[1])
+    # def weight_cross_entropy_with_logits(self, logits, labels, weights=[1, 5, 1]):
+    #     # labels = tf.stop_gradient(labels)
+    #     labels = tf.cast(labels, dtype=tf.float32)
+    #     self.mul = labels * tf.log(logits)
+    #     self.mul2 = tf.multiply(self.mul, weights)
+    #     return -tf.reduce_sum(self.mul2, reduction_indices=[1])
 
     def create_input(self):
         qs = tf.placeholder(tf.int32, [None, None])
@@ -127,13 +131,13 @@ class CQAModel:
                 with tf.variable_scope('char', initializer=tf.glorot_uniform_initializer()):
                     char_mat = tf.get_variable('char_mat', shape=(self.char_num + 1, self.args.char_dim),
                                                initializer=tf.glorot_uniform_initializer())
-                    N = tf.shape(self.cQS)[0]
+
                     cQS = tf.reshape(tf.nn.embedding_lookup(char_mat, self.cQS),
-                                     [N*self.QS_maxlen, self.args.char_max_len, self.args.char_dim])
+                                     [self.N * self.QS_maxlen, self.args.char_max_len, self.args.char_dim])
                     cQB = tf.reshape(tf.nn.embedding_lookup(char_mat, self.cQB),
-                                     [N * self.QB_maxlen, self.args.char_max_len, self.args.char_dim])
+                                     [self.N * self.QB_maxlen, self.args.char_max_len, self.args.char_dim])
                     cC = tf.reshape(tf.nn.embedding_lookup(char_mat, self.cC),
-                                    [N * self.CT_maxlen, self.args.char_max_len, self.args.char_dim])
+                                    [self.N * self.CT_maxlen, self.args.char_max_len, self.args.char_dim])
 
                     char_hidden = 8
                     cell_fw = tf.nn.rnn_cell.GRUCell(char_hidden)
@@ -141,15 +145,18 @@ class CQAModel:
 
                     _, (state_fw, state_bw) = tf.nn.bidirectional_dynamic_rnn(
                         cell_fw, cell_bw, cQS, self.cQS_len, dtype=tf.float32)
-                    cQS_emb = tf.reshape(tf.concat([state_fw, state_bw], axis=1), [N, self.QS_maxlen, 2 * char_hidden])
+                    cQS_emb = tf.reshape(tf.concat([state_fw, state_bw], axis=1),
+                                         [self.N, self.QS_maxlen, 2 * char_hidden])
 
                     _, (state_fw, state_bw) = tf.nn.bidirectional_dynamic_rnn(
                         cell_fw, cell_bw, cQB, self.cQB_len, dtype=tf.float32)
-                    cQB_emb = tf.reshape(tf.concat([state_fw, state_bw], axis=1), [N, self.QB_maxlen, 2 * char_hidden])
+                    cQB_emb = tf.reshape(tf.concat([state_fw, state_bw], axis=1),
+                                         [self.N, self.QB_maxlen, 2 * char_hidden])
 
                     _, (state_fw, state_bw) = tf.nn.bidirectional_dynamic_rnn(
                         cell_fw, cell_bw, cC, self.cC_len, dtype=tf.float32)
-                    cC_emb = tf.reshape(tf.concat([state_fw, state_bw], axis=1), [N, self.CT_maxlen, 2 * char_hidden])
+                    cC_emb = tf.reshape(tf.concat([state_fw, state_bw], axis=1),
+                                        [self.N, self.CT_maxlen, 2 * char_hidden])
 
                     char_embedded = [cQS_emb, cQB_emb, cC_emb]
                     embedded = [tf.concat([a, b], axis=2) for a, b in zip(embedded, char_embedded)]
@@ -159,13 +166,13 @@ class CQAModel:
     def create_label(self):
         return tf.placeholder(tf.int32, [None, self.args.categories_num])
 
-    @property
-    def cweight(self):
-        return self.sess.run(self._cweight)
-
-    @cweight.setter
-    def cweight(self, value):
-        self.sess.run(tf.assign(self._cweight, tf.constant(value, dtype=tf.float32)))
+    # @property
+    # def cweight(self):
+    #     return self.sess.run(self._cweight)
+    #
+    # @cweight.setter
+    # def cweight(self, value):
+    #     self.sess.run(tf.assign(self._cweight, tf.constant(value, dtype=tf.float32)))
 
     @property
     def lr(self):
