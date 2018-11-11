@@ -13,6 +13,7 @@ from keras.preprocessing.sequence import pad_sequences
 nlp = spacy.load('en')
 relevance2label = {'Good': 0, 'PotentiallyUseful': 1, 'Bad': 2}
 char2index = {key: value+1 for value, key in enumerate(string.ascii_letters + string.digits + string.punctuation)}
+char2index['<split>'] = len(char2index) + 1
 
 
 def load_glove(filename):
@@ -31,7 +32,7 @@ def load_glove(filename):
     return word_dic
 
 
-def SemEval15_sample(root):
+def SemEval15_sample(root, concat_q):
     for question in root.findall('Question'):
         qsubject = question.find('QSubject').text
         qbody = question.find('QBody').text
@@ -39,11 +40,14 @@ def SemEval15_sample(root):
             cID = relcomment.get('CID')
             Relevance = relcomment.get('CGOLD')
             cTEXT = relcomment.find('CBody').text
-            if qsubject is None:
+            if not concat_q and qsubject is None:
                 print('----------  qsubject None, cID: %s  ------- ' % cID)
                 continue
-            if qbody is None:
+            if not concat_q and qbody is None:
                 print('----------  qbody None, cID: %s  ------- ' % cID)
+                continue
+            if concat_q and qsubject is None and qbody is None:
+                print('----------  qsubject and qbody None, cID: %s  ------- ' % cID)
                 continue
             if cTEXT is None:
                 print('----------  cTEXT None, cID: %s  ------- ' % cID)
@@ -54,7 +58,7 @@ def SemEval15_sample(root):
             yield [cID, qsubject, qbody, cTEXT, Relevance]
 
 
-def SemEval16or17_sample(root):
+def SemEval16or17_sample(root, concat_q):
     for thread in root.findall('Thread'):
         question = thread.find('RelQuestion')
         qsubject = question.find('RelQSubject').text
@@ -63,11 +67,14 @@ def SemEval16or17_sample(root):
             cID = relcomment.get('RELC_ID')
             Relevance = relcomment.get('RELC_RELEVANCE2RELQ')
             cTEXT = relcomment.find('RelCText').text
-            if qsubject is None:
+            if not concat_q and qsubject is None:
                 print('----------  qsubject None, cID: %s  ------- ' % cID)
                 continue
-            if qbody is None:
+            if not concat_q and qbody is None:
                 print('----------  qbody None, cID: %s  ------- ' % cID)
+                continue
+            if concat_q and qsubject is None and qbody is None:
+                print('----------  qsubject and qbody None, cID: %s  ------- ' % cID)
                 continue
             if cTEXT is None:
                 print('----------  cTEXT None, cID: %s  ------- ' % cID)
@@ -78,13 +85,13 @@ def SemEval16or17_sample(root):
             yield [cID, qsubject, qbody, cTEXT, Relevance]
 
 
-def get_samples(filename):
+def get_samples(filename, concat_q):
     root = ET.parse(filename).getroot()
 
-    if '15' in os.path.basename(filename):
-        return SemEval15_sample(root)
+    if '14' in os.path.basename(filename):
+        return SemEval15_sample(root, concat_q)
     else:
-        return SemEval16or17_sample(root)
+        return SemEval16or17_sample(root, concat_q)
 
 
 def tokenizer(text, need_punct=False):
@@ -151,7 +158,7 @@ def is_atperson(w):
         return False
 
 
-def check_word(text, word_vector_keys):
+def check_word(text, word_vector_keys, concat_q):
     new_text = []
     for word in text:
         w = word.lower().strip()
@@ -180,25 +187,28 @@ def check_word(text, word_vector_keys):
             #     elif i>0 and fine_text[i-1] is '<unk>':
             #         fine_text.append('<unk>')
             new_text.append('<unk>')
-    if len(new_text) == 0:
-        return ['<blank>']
+    if len(new_text) == 0 and not concat_q:
+        raise ValueError('Existing blank sentence')
     return new_text
 
 
-def process_sample(sample, word_count, char_max_len, word_vector_keys, need_punct=False):
+def process_sample(sample, word_count, char_max_len, word_vector_keys, need_punct=False, num=0, concat_q=False):
     """
     样本形式为 ‘[cID, qsubject, qbody, cTEXT, Relevance]’ 的列表
-    :param sample:
-    :return:
     """
     cID, qsubject, qbody, cTEXT, Relevance = sample
     qsubject = tokenizer(qsubject, need_punct=need_punct)
     qbody = tokenizer(qbody, need_punct=need_punct)
     cTEXT = tokenizer(cTEXT, need_punct=need_punct)
 
-    qsubject_sent = check_word(qsubject, word_vector_keys)
-    qbody_sent = check_word(qbody, word_vector_keys)
-    cTEXT_sent = check_word(cTEXT, word_vector_keys)
+    if len(qsubject) == 0 and len(qbody) == 0:
+        return None
+    if not concat_q and (len(qsubject) <= num or len(qbody) <= num or len(cTEXT) <= num):
+        return None
+
+    qsubject_sent = check_word(qsubject, word_vector_keys, concat_q)
+    qbody_sent = check_word(qbody, word_vector_keys, concat_q)
+    cTEXT_sent = check_word(cTEXT, word_vector_keys, concat_q)
 
     count_word_number(word_count, qsubject_sent)
     count_word_number(word_count, qbody_sent)
@@ -212,6 +222,12 @@ def process_sample(sample, word_count, char_max_len, word_vector_keys, need_punc
     char_qbody = pad_sequences(char_qbody, maxlen=char_max_len, padding='post', truncating='post')
     char_cTEXT = pad_sequences(char_cTEXT, maxlen=char_max_len, padding='post', truncating='post')
 
+    if concat_q:
+        q_sent = qsubject_sent + ['<split>'] + qbody_sent
+        count_word_number(word_count, ['<split>'])
+        split = np.asarray([[char2index['<split>']]*char_max_len])
+        char_q = np.concatenate([char_qsubject, split, char_qbody], axis=0)
+        return cID, q_sent, cTEXT_sent, char_q, char_cTEXT, Relevance
     return cID, qsubject_sent, qbody_sent, cTEXT_sent, char_qsubject, char_qbody, char_cTEXT, Relevance
 
 
@@ -226,7 +242,7 @@ def replace2index(sample, word2index):
     return cID, qsubject, qbody, cTEXT, char_qsubject, char_qbody, char_cTEXT, np.asarray(label)
 
 
-def preprocessing(filepath, savepath, char_max_len, need_punct=False, glove_filename='glove.6B.300d.txt'):
+def preprocessing(filepath, savepath, char_max_len, need_punct=False, num=0, concat_q=False, glove_filename='glove.6B.300d.txt'):
     listname = os.listdir(filepath)
     word_count = {}
     all_samples = {}
@@ -237,11 +253,12 @@ def preprocessing(filepath, savepath, char_max_len, need_punct=False, glove_file
     for name in listname:
         print('\n\t\t处理文件：%s\n' % name)
         filename = os.path.join(filepath, name)
-        samples = get_samples(filename)
+        samples = get_samples(filename, concat_q)
         samples = [process_sample(sample, word_count,
                                   char_max_len, word_vector.keys(),
-                                  need_punct=need_punct)
+                                  need_punct=need_punct, num=num, concat_q=concat_q)
                    for sample in tqdm(samples)]
+        samples = [a for a in samples if a is not None]
         all_samples[name] = samples
 
     print('\n--------------------------------------')

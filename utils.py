@@ -1,5 +1,7 @@
 import os
 import random
+import time
+
 import numpy as np
 
 from prettytable import PrettyTable
@@ -212,7 +214,13 @@ def print_metrics(metrics, metrics_type, save_dir=None, categories_num=3):
     loss = metrics['loss']
     epoch = metrics['epoch']
     if categories_num == 3:
-        lines = ['------------  Epoch {0}, loss {1:.4f}  -----------'.format(epoch, loss),
+        lines = ['\n\n**********************************************************************************',
+                 '*                                                                                *',
+                 '*                           {}                                  *'.format(
+                      time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))),
+                 '*                                                                                *',
+                 '**********************************************************************************\n',
+                 '------------  Epoch {0}, loss {1:.4f}  -----------'.format(epoch, loss),
                  'Confusion matrix:',
                  '{0:>6}|{1:>6}|{2:>6}|{3:>6}|<-- classified as'.format(' ', 'Good', 'Pot.', 'Bad'),
                  '------|--------------------|{0:>6}'.format('-SUM-'),
@@ -230,7 +238,13 @@ def print_metrics(metrics, metrics_type, save_dir=None, categories_num=3):
                  'P ={0:>6.2f}%, R ={1:>6.2f}%, F ={2:>6.2f}%'.format(*macro_prf),
                  '--------------------------------------------------\n']
     else:
-        lines = ['------------  Epoch {0}, loss {1:.4f}  -----------'.format(epoch, loss),
+        lines = ['\n\n**********************************************************************************',
+                 '*                                                                                *',
+                 '*                           {}                                  *'.format(
+                     time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))),
+                 '*                                                                                *',
+                 '**********************************************************************************\n',
+                 '------------  Epoch {0}, loss {1:.4f}  -----------'.format(epoch, loss),
                  'Confusion matrix:',
                  '{0:>6}|{1:>6}|{2:>6}|<-- classified as'.format(' ', 'Good', 'Bad'),
                  '------|-------------|{0:>6}'.format('-SUM-'),

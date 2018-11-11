@@ -12,10 +12,10 @@ config = Config()
 parser = argparse.ArgumentParser()
 
 parser.add_argument('--mode', type=str, default='train')
-parser.add_argument('--model', type=str, default='Baseline')
-parser.add_argument('--train_list', type=list, default=['15train'])
-parser.add_argument('--dev_list', type=list, default=['15dev'])
-parser.add_argument('--test_list', type=list, default=['15test'])
+parser.add_argument('--model', type=str, default='QCN')
+parser.add_argument('--train_list', type=list, default=['16train1', '16train2', '15train', '15dev', '15test'])
+parser.add_argument('--dev_list', type=list, default=['16dev'])
+parser.add_argument('--test_list', type=list, default=['16test'])
 
 parser.add_argument('--lr', type=float, default=config.lr)
 parser.add_argument('--dropout', type=float, default=config.dropout)
@@ -34,6 +34,10 @@ parser.add_argument('--categories_num', type=int, default=config.categories_num)
 parser.add_argument('--period', type=int, default=config.period)
 
 parser.add_argument('--need_punct', type=bool, default=config.need_punct)
+parser.add_argument('--wipe_num', type=int, default=config.wipe_num)
+
+parser.add_argument('--word_trainable', type=bool, default=config.word_trainable)
+parser.add_argument('--concat_q', type=bool, default=config.concat_q)
 parser.add_argument('--need_shuffle', type=bool, default=config.need_shuffle)
 parser.add_argument('--use_char_level', type=bool, default=config.use_char_level)
 parser.add_argument('--load_best_model', type=bool, default=config.load_best_model)
@@ -45,7 +49,8 @@ parser.add_argument('--glove_file', type=str, default=config.glove_filename)
 
 def run(args):
     if args.mode == 'prepare':
-        preprocessing('./rawData', './data', need_punct=args.need_punct,
+        preprocessing('./rawData', './data', need_punct=args.need_punct, num=args.wipe_num,
+                      concat_q=args.concat_q,
                       char_max_len=args.char_max_len, glove_filename=args.glove_file)
     else:
         # loading preprocessed data

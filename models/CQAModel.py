@@ -8,6 +8,8 @@ from utils import BatchDatasets, PRF, print_metrics, eval_reranker
 from tqdm import tqdm
 from layers.BiGRU import BiGRU
 
+EPSILON = 1e-7
+
 
 class CQAModel:
 
@@ -18,22 +20,22 @@ class CQAModel:
         self.sess = tf.Session(config=sess_config)
         seed = random.randint(1, 600)
         print(seed)
-        tf.set_random_seed(134)
+        tf.set_random_seed(seed)
 
         # hyper parameters and neccesary info
         self._is_train = tf.get_variable('is_train', shape=[], dtype=tf.bool, trainable=False)
         self.word_mat = tf.get_variable('word_mat',
                                         initializer=tf.constant(embedding_matrix, dtype=tf.float32),
-                                        trainable=False)
+                                        trainable=args.word_trainable)
         self._global_step = tf.get_variable('global_step', shape=[], dtype=tf.int32,
                                             initializer=tf.constant_initializer(0), trainable=False)
         self.dropout_keep_prob = tf.get_variable('dropout', shape=[], dtype=tf.float32,
                                                  initializer=tf.constant_initializer(1), trainable=False)
         self._lr = tf.get_variable('lr', shape=[], dtype=tf.float32,
                                    initializer=tf.constant_initializer(0.001), trainable=False)
-        # self._cweight = tf.get_variable('cweight', dtype=tf.float32,
-        #                                 initializer=tf.constant([1. for _ in range(args.categories_num)]),
-        #                                 trainable=False)
+        self._cweight = tf.get_variable('cweight', dtype=tf.float32,
+                                        initializer=tf.constant([1. for _ in range(args.categories_num)]),
+                                        trainable=False)
         self.args = args
         self.char_num = char_num
         self.N = None
@@ -74,17 +76,15 @@ class CQAModel:
 
         # computing loss
         with tf.variable_scope('predict'):
-            # self.label = tf.multiply(tf.cast(self.label, tf.float32), tf.expand_dims(self._cweight, axis=0))
-
             self.predict_prob = tf.nn.softmax(self.output, axis=1)
-            # self.predict = tf.argmax(self.predict_prob, axis=1)
-            losses = tf.nn.softmax_cross_entropy_with_logits_v2(logits=self.output,
-                                                                labels=tf.stop_gradient(self.label))
-            # losses = self.weight_cross_entropy_with_logits(self.predict_prob, self.label)
+            losses = self.weight_cross_entropy_with_logits()
             self.loss = tf.reduce_mean(losses)
             if self.args.l2_weight != 0:
                 for v in tf.trainable_variables():
                     self.loss += self.args.l2_weight * tf.nn.l2_loss(v)
+
+        # counting parameters
+        self.count()
 
         # getting ready for training
         self.opt = tf.train.AdamOptimizer(learning_rate=self._lr, epsilon=1e-6)
@@ -96,12 +96,13 @@ class CQAModel:
 
         self.input_placeholder = [inp for inp in self.inputs if inp is not None] + [self.label]
 
-    # def weight_cross_entropy_with_logits(self, logits, labels, weights=[1, 5, 1]):
-    #     # labels = tf.stop_gradient(labels)
-    #     labels = tf.cast(labels, dtype=tf.float32)
-    #     self.mul = labels * tf.log(logits)
-    #     self.mul2 = tf.multiply(self.mul, weights)
-    #     return -tf.reduce_sum(self.mul2, reduction_indices=[1])
+    def weight_cross_entropy_with_logits(self):
+        # alpha = tf.multiply(tf.cast(self.label, tf.float32), tf.expand_dims(self._cweight, axis=0))
+        # n_alpha = tf.multiply(tf.cast(1-self.label, tf.float32), tf.expand_dims(self._cweight, axis=0))
+        # Focal Loss
+        prob = tf.clip_by_value(self.predict_prob, EPSILON, 1-EPSILON)
+        info = tf.cast(self.label, tf.float32) * tf.log(prob)
+        return -tf.reduce_sum(info, axis=1)
 
     def create_input(self):
         qs = tf.placeholder(tf.int32, [None, None])
@@ -166,13 +167,13 @@ class CQAModel:
     def create_label(self):
         return tf.placeholder(tf.int32, [None, self.args.categories_num])
 
-    # @property
-    # def cweight(self):
-    #     return self.sess.run(self._cweight)
-    #
-    # @cweight.setter
-    # def cweight(self, value):
-    #     self.sess.run(tf.assign(self._cweight, tf.constant(value, dtype=tf.float32)))
+    @property
+    def cweight(self):
+        return self.sess.run(self._cweight)
+
+    @cweight.setter
+    def cweight(self, value):
+        self.sess.run(tf.assign(self._cweight, tf.constant(value, dtype=tf.float32)))
 
     @property
     def lr(self):
@@ -258,10 +259,11 @@ class CQAModel:
         print('---------------------------------------------')
 
         print('class weight: ', batch_dataset.cweight)
+        # self.cweight = [.9, 5., 1.1]
 
         print('\n---------------------------------------------')
         print('process dev data')
-        dev_data = [batch for batch in batch_dataset.batch_dev_data(dev_batch_size=2*config.batch_size)]
+        dev_data = [batch for batch in batch_dataset.batch_dev_data(dev_batch_size=3*config.batch_size//2)]
         dev_steps = batch_dataset.dev_steps_num
         dev_id = batch_dataset.dev_cID
         print('----------------------------------------------\n')
@@ -275,7 +277,7 @@ class CQAModel:
 
             print('training model')
             self.is_train = True
-            # self.cweight = batch_dataset.cweight
+
             with tqdm(total=train_steps, ncols=70) as tbar:
                 for batch_train_data in train_data:
                     feed_dict = {inv: array for inv, array in zip(self.input_placeholder, batch_train_data)}
@@ -290,7 +292,6 @@ class CQAModel:
             print('\n---------------------------------------')
             print('\nevaluating model\n')
             self.is_train = False
-            # self.cweight = [1., 1., 1.]
             # metrics, summ = self.evaluate(train_data, train_steps, 'train')
             # metrics['epoch'] = epoch
             #
@@ -331,20 +332,34 @@ class CQAModel:
 
     def train(self, batch_dataset: BatchDatasets, config):
         with self.sess:
-            writer = tf.summary.FileWriter(config.log_dir)
+
             saver = tf.train.Saver()
             self.sess.run(tf.global_variables_initializer())
 
             path = os.path.join(config.model_dir, self.__class__.__name__)
-            if config.load_best_model and os.path.exists(path):
-                print('------------  load model  ------------')
-                saver.restore(self.sess, tf.train.latest_checkpoint(path))
+            if not os.path.exists(config.model_dir):
+                os.mkdir(config.model_dir)
 
             if config.k_fold > 1:
                 for i in range(config.k_fold):
+                    if config.load_best_model and os.path.exists(path):
+                        print('------------  load model  ------------')
+                        print(tf.train.latest_checkpoint(path + '/fold_{}'.format(i)))
+                        saver.restore(self.sess, tf.train.latest_checkpoint(path + '/fold_{}'.format(i)))
+                    path = os.path.join(path, 'fold_%d' % i)
+                    if not os.path.exists(path):
+                        os.mkdir(path)
+                    writer = tf.summary.FileWriter(path)
                     self.one_train(batch_dataset, saver, writer, config, i)
                     tf.reset_default_graph()
             else:
+                if config.load_best_model and os.path.exists(path):
+                    print('------------  load model  ------------')
+                    # print(tf.train.latest_checkpoint(path + '/fold_0'))
+                    saver.restore(self.sess, tf.train.latest_checkpoint(path))
+                if not os.path.exists(path):
+                    os.mkdir(path)
+                writer = tf.summary.FileWriter(path)
                 self.one_train(batch_dataset, saver, writer, config)
 
     def one_test(self, batch_dataset, config):
@@ -364,11 +379,30 @@ class CQAModel:
                 sub_dir = os.listdir(config.model_dir)
                 for name in sub_dir:
                     path = os.path.join(config.model_dir, name)
+                    print(tf.train.latest_checkpoint(config.model_dir))
                     saver.restore(self.sess, tf.train.latest_checkpoint(path))
                     self.one_test(batch_dataset, config)
             else:
+                print(tf.train.latest_checkpoint(config.model_dir))
                 saver.restore(self.sess, tf.train.latest_checkpoint(config.model_dir))
                 self.one_test(batch_dataset, config)
+
+    def count(self):
+        total_parameters = 0
+        for variable in tf.trainable_variables():
+            # shape is an array of tf.Dimension
+            shape = variable.get_shape()
+            # print(shape)
+            # print(len(shape))
+            variable_parameters = 1
+            for dim in shape:
+                # print(dim)
+                variable_parameters *= dim.value
+            # print(variable_parameters)
+            total_parameters += variable_parameters
+        print('\n\n------------------------------------------------')
+        print('total_parameters: ', total_parameters)
+        print('------------------------------------------------\n\n')
 
 
 

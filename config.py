@@ -1,6 +1,6 @@
 class Config:
-    lr = 0.001
-    dropout = 0.
+    lr = 1e-4
+    dropout = 0.2
     qs_max_len = 20
     qb_max_len = 95
     ct_max_len = 150
@@ -12,13 +12,17 @@ class Config:
 
     patience = 5
     k_fold = 0
-    categories_num = 3
-    period = 100
+    categories_num = 2
+    period = 50
 
-    need_punct = True
+    need_punct = False
+    wipe_num = 0
+
+    word_trainable = False
+    concat_q = False
     need_shuffle = True
     use_char_level = False
-    load_best_model = False
+    load_best_model = True
 
     model_dir = './models/CQAModel'
     log_dir = './models/CQAModel'
