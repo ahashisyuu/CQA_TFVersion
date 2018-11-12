@@ -2,38 +2,49 @@ import tensorflow as tf
 
 from .CQAModel import CQAModel
 from layers.BiGRU import NativeGRU as BiGRU
+import keras.losses
 
-
-class Baseline(CQAModel):
-
-    def transformer(self, QS, QB, trans_type=0):
-        # QS: (B, L1, dim), QB: (B, L2, dim)
-        with tf.variable_scope('transformer'):
-            QS_exp = tf.tile(tf.expand_dims(QS, axis=2), [1, 1, self.QB_maxlen, 1])  # (B, L1, L2, dim)
-            QB_exp = tf.tile(tf.expand_dims(QB, axis=1), [1, self.QS_maxlen, 1, 1])  # (B, L1, L2, dim)
-
-            infomation = tf.concat([QS_exp, QB_exp, QS_exp - QB_exp, QS_exp * QB_exp], axis=3)
-            infomation = tf.nn.dropout(infomation, keep_prob=self.dropout_keep_prob)
-            score_matrix = tf.layers.dense(infomation, 1, activation=tf.tanh, use_bias=False)  # (B, L1, L2, 1)
-
-            if trans_type == 0:
-                mask = tf.expand_dims(tf.expand_dims(self.QB_mask, axis=1), axis=3)
-                score_matrix -= (1 - mask) * 1e30
-                alpha = tf.nn.softmax(score_matrix, axis=2)  # L2
-                newQ = tf.reduce_sum(alpha * QB_exp, axis=2)  # (B, L1, dim)
-            else:
-                mask = tf.expand_dims(tf.expand_dims(self.QS_mask, axis=2), axis=3)
-                score_matrix -= (1 - mask) * 1e30
-                alpha = tf.nn.softmax(score_matrix, axis=1)  # L2
-                newQ = tf.reduce_sum(alpha * QB_exp, axis=1)  # (B, L2, dim)
-
-            return newQ
-
+class Baseline2(CQAModel):
     def build_model(self):
         with tf.variable_scope('baseline', initializer=tf.glorot_uniform_initializer()):
             units = 300
-            Q, C = self.QBody, self.CT
-            Q_len, C_len = self.QB_len, self.CT_len
+            Q, C = self.QS, self.CT
+            Q_len, C_len = self.QS_len, self.CT_len
+
+            with tf.variable_scope('encode'):
+                rnn = BiGRU(num_layers=1, num_units=units,
+                            batch_size=tf.shape(self.QS)[0], input_size=self.CT.get_shape()[-1],
+                            keep_prob=self.dropout_keep_prob, is_train=self._is_train)
+
+                Q_sequence = rnn(Q, seq_len=Q_len, return_type=1)
+                C_sequence = rnn(C, seq_len=C_len, return_type=1)
+
+            with tf.variable_scope('conv'):
+                Q_conv = tf.layers.conv1d(Q_sequence, filters=units, kernel_size=5, name='con1d')
+                C_conv = tf.layers.conv1d(C_sequence, filters=units, kernel_size=5, name='con1d', reuse=True)
+
+                Q_w = tf.layers.conv1d(Q_sequence, filters=1, kernel_size=5, name='con1d_w')
+                C_w = tf.layers.conv1d(C_sequence, filters=1, kernel_size=5, name='con1d_w', reuse=True)
+                Q_w = tf.nn.softmax(Q_w, axis=1)
+                C_w = tf.nn.softmax(C_w, axis=1)
+                # Q_w = tf.squeeze(Q_w, axis=-1)
+                # C_w = tf.squeeze(C_w, axis=-1)
+                #
+                # parse, indice = tf.nn.top_k(Q_w, 10)
+                # weight = parse / tf.reduce_sum(parse, axis=1, keepdims=True)
+                # vector = tf.batch_gather(Q_conv, indice)
+                # Q_vec = tf.reduce_sum(tf.expand_dims(weight, axis=-1) * vector, axis=1)
+                #
+                # parse, indice = tf.nn.top_k(C_w, 10)
+                # weight = parse / tf.reduce_sum(parse, axis=1, keepdims=True)
+                # vector = tf.batch_gather(C_conv, indice)
+                # C_vec = tf.reduce_sum(tf.expand_dims(weight, axis=-1) * vector, axis=1)
+                Q_vec = tf.reduce_sum(Q_conv * Q_w, axis=1)
+                C_vec = tf.reduce_sum(C_conv * C_w, axis=1)
+
+            info = tf.concat([Q_vec, C_vec, Q_vec * C_vec], axis=1)
+            median = tf.layers.dense(info, 300, activation=tf.tanh)
+            output = tf.layers.dense(median, self.args.categories_num, activation=tf.identity)
 
             return output
 

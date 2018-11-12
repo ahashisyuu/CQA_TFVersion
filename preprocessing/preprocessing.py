@@ -15,6 +15,8 @@ relevance2label = {'Good': 0, 'PotentiallyUseful': 1, 'Bad': 2}
 char2index = {key: value+1 for value, key in enumerate(string.ascii_letters + string.digits + string.punctuation)}
 char2index['<split>'] = len(char2index) + 1
 
+Qcategory_dic = {}
+
 
 def load_glove(filename):
     print('\nload word dictionary starting!')
@@ -63,6 +65,7 @@ def SemEval16or17_sample(root, concat_q):
         question = thread.find('RelQuestion')
         qsubject = question.find('RelQSubject').text
         qbody = question.find('RelQBody').text
+        qcategory = question.get('RELQ_CATEGORY')
         for relcomment in thread.findall('RelComment'):
             cID = relcomment.get('RELC_ID')
             Relevance = relcomment.get('RELC_RELEVANCE2RELQ')
@@ -82,7 +85,7 @@ def SemEval16or17_sample(root, concat_q):
             if Relevance is None:
                 print('----------  Relevance None, cID: %s  ------- ' % cID)
                 continue
-            yield [cID, qsubject, qbody, cTEXT, Relevance]
+            yield [cID, qsubject, qbody, cTEXT, Relevance, qcategory]
 
 
 def get_samples(filename, concat_q):
@@ -98,7 +101,7 @@ def tokenizer(text, need_punct=False):
     if need_punct:
         return [word.orth_ for word in nlp(text) if not word.is_space]
     else:
-        return [word.orth_ for word in nlp(text) if not word.is_punct or not word.is_space]
+        return [word.orth_ for word in nlp(text) if not word.is_punct and not word.is_space]
 
 
 def char_tokenizer(text):
@@ -192,13 +195,19 @@ def check_word(text, word_vector_keys, concat_q):
     return new_text
 
 
+def category2index(category):
+    if category not in Qcategory_dic:
+        Qcategory_dic[category] = len(Qcategory_dic)
+    return Qcategory_dic[category]
+
+
 def process_sample(sample, word_count, char_max_len, word_vector_keys, need_punct=False, num=0, concat_q=False):
     """
-    样本形式为 ‘[cID, qsubject, qbody, cTEXT, Relevance]’ 的列表
+    样本形式为 ‘[cID, qsubject, qbody, cTEXT, Relevance, qcategory]’ 的列表
     """
-    cID, qsubject, qbody, cTEXT, Relevance = sample
-    qsubject = tokenizer(qsubject, need_punct=need_punct)
-    qbody = tokenizer(qbody, need_punct=need_punct)
+    cID, qsubject, qbody, cTEXT, Relevance, qcategory = sample
+    qsubject = tokenizer(qsubject, need_punct=need_punct) if qsubject is not None else []
+    qbody = tokenizer(qbody, need_punct=need_punct) if qbody is not None else []
     cTEXT = tokenizer(cTEXT, need_punct=need_punct)
 
     if len(qsubject) == 0 and len(qbody) == 0:
@@ -227,19 +236,31 @@ def process_sample(sample, word_count, char_max_len, word_vector_keys, need_punc
         count_word_number(word_count, ['<split>'])
         split = np.asarray([[char2index['<split>']]*char_max_len])
         char_q = np.concatenate([char_qsubject, split, char_qbody], axis=0)
-        return cID, q_sent, cTEXT_sent, char_q, char_cTEXT, Relevance
-    return cID, qsubject_sent, qbody_sent, cTEXT_sent, char_qsubject, char_qbody, char_cTEXT, Relevance
+        return cID, q_sent, cTEXT_sent, char_q, char_cTEXT, Relevance, category2index(qcategory)
+    return cID, qsubject_sent, qbody_sent, cTEXT_sent, \
+        char_qsubject, char_qbody, char_cTEXT, Relevance, \
+        category2index(qcategory)
 
 
-def replace2index(sample, word2index):
-    cID, qsubject, qbody, cTEXT, char_qsubject, char_qbody, char_cTEXT, Relevance = sample
-    qsubject = [word2index[token] for token in qsubject]
-    qbody = [word2index[token] for token in qbody]
-    cTEXT = [word2index[token] for token in cTEXT]
-    label = [0, 0, 0]
-    label[relevance2label[Relevance]] = 1
+def replace2index(sample, word2index, concate_q):
+    if not concate_q:
+        cID, qsubject, qbody, cTEXT, \
+        char_qsubject, char_qbody, char_cTEXT, Relevance, Qcategory = sample
+        qsubject = [word2index[token] for token in qsubject]
+        qbody = [word2index[token] for token in qbody]
+        cTEXT = [word2index[token] for token in cTEXT]
+        label = [0, 0, 0]
+        label[relevance2label[Relevance]] = 1
 
-    return cID, qsubject, qbody, cTEXT, char_qsubject, char_qbody, char_cTEXT, np.asarray(label)
+        return cID, qsubject, qbody, cTEXT, char_qsubject, char_qbody, char_cTEXT, np.asarray(label), Qcategory
+    else:
+        cID, qsubject, cTEXT, char_qsubject, char_cTEXT, Relevance, Qcategory = sample
+        qsubject = [word2index[token] for token in qsubject]
+        cTEXT = [word2index[token] for token in cTEXT]
+        label = [0, 0, 0]
+        label[relevance2label[Relevance]] = 1
+
+        return cID, qsubject, cTEXT, char_qsubject, char_cTEXT, np.asarray(label), Qcategory
 
 
 def preprocessing(filepath, savepath, char_max_len, need_punct=False, num=0, concat_q=False, glove_filename='glove.6B.300d.txt'):
@@ -279,6 +300,11 @@ def preprocessing(filepath, savepath, char_max_len, need_punct=False, num=0, con
         json.dump(word2index, fw)
 
     print('\n--------------------------------------')
+    print('\tthe number of qcategory: %d\n' % len(Qcategory_dic))
+    with open(os.path.join(savepath, 'Qcategory_dic.pkl'), 'wb') as fw:
+        pkl.dump(Qcategory_dic, fw)
+
+    print('\n--------------------------------------')
     print('\t作嵌入矩阵并保存\n')
     embedding_matrix = np.zeros((len(word2index) + 1, 300))
     for word, index in word2index.items():
@@ -293,7 +319,7 @@ def preprocessing(filepath, savepath, char_max_len, need_punct=False, num=0, con
     for name in listname:
         print('\n\t\t处理数据集名称：%s\n' % name)
         samples = all_samples[name]
-        all_samples[name] = [replace2index(sample, word2index) for sample in tqdm(samples)]
+        all_samples[name] = [replace2index(sample, word2index, concat_q) for sample in tqdm(samples)]
 
     with open(os.path.join(savepath, 'dataset.pkl'), 'wb') as fw:
         pkl.dump(all_samples, fw)

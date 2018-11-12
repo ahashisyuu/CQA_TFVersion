@@ -1,5 +1,5 @@
 class Config:
-    lr = 1e-4
+    lr = 1e-5
     dropout = 0.2
     qs_max_len = 20
     qb_max_len = 95
@@ -19,10 +19,10 @@ class Config:
     wipe_num = 0
 
     word_trainable = False
-    concat_q = False
+    concat_q = True
     need_shuffle = True
     use_char_level = False
-    load_best_model = True
+    load_best_model = False
 
     model_dir = './models/CQAModel'
     log_dir = './models/CQAModel'

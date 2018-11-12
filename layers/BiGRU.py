@@ -47,18 +47,18 @@ def bidirectional_rnn(cell_fw, cell_bw, inputs, sequence_length=None,
             time_dim = 0
             batch_dim = 1
 
-        def _reverse(input_, seq_lengths, seq_dim, batch_dim):
+        def _reverse(input_, seq_lengths, seq_dim, batch_axis):
             if seq_lengths is not None:
                 return tf.reverse_sequence(
                     input=input_ * mask_bw, seq_lengths=seq_lengths,
-                    seq_dim=seq_dim, batch_dim=batch_dim)
+                    seq_axis=seq_dim, batch_axis=batch_axis)
             else:
                 return tf.reverse(input_, axis=[seq_dim])
 
         with tf.variable_scope("bw") as bw_scope:
             inputs_reverse = _reverse(
                 inputs, seq_lengths=sequence_length,
-                seq_dim=time_dim, batch_dim=batch_dim)
+                seq_dim=time_dim, batch_axis=batch_dim)
             tmp, output_state_bw = tf.nn.dynamic_rnn(
                 cell=cell_bw, inputs=inputs_reverse, sequence_length=sequence_length,
                 initial_state=initial_state_bw, dtype=dtype,
@@ -67,7 +67,7 @@ def bidirectional_rnn(cell_fw, cell_bw, inputs, sequence_length=None,
 
     output_bw = _reverse(
         tmp, seq_lengths=sequence_length,
-        seq_dim=time_dim, batch_dim=batch_dim)
+        seq_dim=time_dim, batch_axis=batch_dim)
 
     outputs = (output_fw, output_bw)
     output_states = (output_state_fw, output_state_bw)
@@ -177,7 +177,7 @@ class NativeGRU:
                         gru_fw, outputs[-1] * mask_fw, seq_len, initial_state=init_fw, dtype=tf.float32)
                 with tf.variable_scope("bw_{}".format(layer)):
                     inputs_bw = tf.reverse_sequence(
-                        outputs[-1] * mask_bw, seq_lengths=seq_len, seq_dim=1, batch_dim=0)
+                        outputs[-1] * mask_bw, seq_lengths=seq_len, seq_axis=1, batch_axis=0)
                     out_bw, state_bw = tf.nn.dynamic_rnn(
                         gru_bw, inputs_bw, seq_len, initial_state=init_bw, dtype=tf.float32)
                     out_bw = tf.reverse_sequence(

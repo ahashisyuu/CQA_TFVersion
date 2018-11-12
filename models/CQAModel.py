@@ -41,18 +41,20 @@ class CQAModel:
         self.N = None
 
         # batch input
-        self.inputs = self.QSubject, self.QBody, self.CText, self.cQS, self.cQB, self.cC = self.create_input()
+        self.inputs = self.QSubject, self.QBody, self.CText, \
+            self.cQS, self.cQB, self.cC, self.Qcategory = self.create_input()
+        self.inputs = self.inputs[:-1]
 
         # preparing mask and length info
         self.QS_mask = tf.cast(tf.cast(self.QSubject, tf.bool), tf.float32)
-        self.QB_mask = tf.cast(tf.cast(self.QBody, tf.bool), tf.float32)
+        self.QB_mask = tf.cast(tf.cast(self.QBody, tf.bool), tf.float32) if not self.args.concat_q else None
         self.CT_mask = tf.cast(tf.cast(self.CText, tf.bool), tf.float32)
 
         self.QS_len = tf.reduce_sum(tf.cast(self.QS_mask, tf.int32), axis=1)
-        self.QB_len = tf.reduce_sum(tf.cast(self.QB_mask, tf.int32), axis=1)
+        self.QB_len = tf.reduce_sum(tf.cast(self.QB_mask, tf.int32), axis=1) if not self.args.concat_q else None
         self.CT_len = tf.reduce_sum(tf.cast(self.CT_mask, tf.int32), axis=1)
         self.QS_maxlen = tf.reduce_max(self.QS_len)
-        self.QB_maxlen = tf.reduce_max(self.QB_len)
+        self.QB_maxlen = tf.reduce_max(self.QB_len) if not self.args.concat_q else None
         self.CT_maxlen = tf.reduce_max(self.CT_len)
 
         self.N = self.QS_mask.get_shape()[0]
@@ -106,24 +108,27 @@ class CQAModel:
 
     def create_input(self):
         qs = tf.placeholder(tf.int32, [None, None])
-        qb = tf.placeholder(tf.int32, [None, None])
+        qb = tf.placeholder(tf.int32, [None, None]) if not self.args.concat_q else None
         c = tf.placeholder(tf.int32, [None, None])
         inputs = [qs, qb, c]
 
         if self.args.use_char_level:
             cqs = tf.placeholder(tf.int32, [None, None, None])
-            cqb = tf.placeholder(tf.int32, [None, None, None])
+            cqb = tf.placeholder(tf.int32, [None, None, None]) if not self.args.concat_q else None
             cc = tf.placeholder(tf.int32, [None, None, None])
             inputs += [cqs, cqb, cc]
         else:
             inputs += [None] * 3
-        return inputs
+
+        category = tf.placeholder(tf.int32, [None])
+
+        return inputs + [category]
 
     def embedding(self):
         # word embedding
         with tf.variable_scope('emb'):
             QS = tf.nn.embedding_lookup(self.word_mat, self.QSubject)
-            QB = tf.nn.embedding_lookup(self.word_mat, self.QBody)
+            QB = tf.nn.embedding_lookup(self.word_mat, self.QBody) if not self.args.concat_q else None
             CT = tf.nn.embedding_lookup(self.word_mat, self.CText)
 
             embedded = [QS, QB, CT]
@@ -136,7 +141,8 @@ class CQAModel:
                     cQS = tf.reshape(tf.nn.embedding_lookup(char_mat, self.cQS),
                                      [self.N * self.QS_maxlen, self.args.char_max_len, self.args.char_dim])
                     cQB = tf.reshape(tf.nn.embedding_lookup(char_mat, self.cQB),
-                                     [self.N * self.QB_maxlen, self.args.char_max_len, self.args.char_dim])
+                                     [self.N * self.QB_maxlen, self.args.char_max_len, self.args.char_dim]) \
+                        if not self.args.concat_q else None
                     cC = tf.reshape(tf.nn.embedding_lookup(char_mat, self.cC),
                                     [self.N * self.CT_maxlen, self.args.char_max_len, self.args.char_dim])
 
@@ -148,11 +154,13 @@ class CQAModel:
                         cell_fw, cell_bw, cQS, self.cQS_len, dtype=tf.float32)
                     cQS_emb = tf.reshape(tf.concat([state_fw, state_bw], axis=1),
                                          [self.N, self.QS_maxlen, 2 * char_hidden])
-
-                    _, (state_fw, state_bw) = tf.nn.bidirectional_dynamic_rnn(
-                        cell_fw, cell_bw, cQB, self.cQB_len, dtype=tf.float32)
-                    cQB_emb = tf.reshape(tf.concat([state_fw, state_bw], axis=1),
-                                         [self.N, self.QB_maxlen, 2 * char_hidden])
+                    if not self.args.concat_q:
+                        _, (state_fw, state_bw) = tf.nn.bidirectional_dynamic_rnn(
+                            cell_fw, cell_bw, cQB, self.cQB_len, dtype=tf.float32)
+                        cQB_emb = tf.reshape(tf.concat([state_fw, state_bw], axis=1),
+                                             [self.N, self.QB_maxlen, 2 * char_hidden])
+                    else:
+                        cQB_emb = None
 
                     _, (state_fw, state_bw) = tf.nn.bidirectional_dynamic_rnn(
                         cell_fw, cell_bw, cC, self.cC_len, dtype=tf.float32)
@@ -160,7 +168,8 @@ class CQAModel:
                                         [self.N, self.CT_maxlen, 2 * char_hidden])
 
                     char_embedded = [cQS_emb, cQB_emb, cC_emb]
-                    embedded = [tf.concat([a, b], axis=2) for a, b in zip(embedded, char_embedded)]
+                    embedded = [tf.concat([a, b], axis=2) if a is not None and b is not None else None
+                                for a, b in zip(embedded, char_embedded)]
 
             return embedded
 
@@ -220,7 +229,7 @@ class CQAModel:
         loss = []
         with tqdm(total=steps_num, ncols=70) as tbar:
             for batch_eva_data in eva_data:
-                batch_label = batch_eva_data[-1]
+                batch_label = batch_eva_data[-2]
                 feed_dict = {inv: array for inv, array in zip(self.input_placeholder, batch_eva_data)}
                 batch_loss, batch_predict = self.sess.run([self.loss, self.predict_prob], feed_dict=feed_dict)
                 label.append(batch_label.argmax(axis=1))
@@ -263,7 +272,7 @@ class CQAModel:
 
         print('\n---------------------------------------------')
         print('process dev data')
-        dev_data = [batch for batch in batch_dataset.batch_dev_data(dev_batch_size=3*config.batch_size//2)]
+        dev_data = [batch for batch in batch_dataset.batch_dev_data()]
         dev_steps = batch_dataset.dev_steps_num
         dev_id = batch_dataset.dev_cID
         print('----------------------------------------------\n')
@@ -355,8 +364,8 @@ class CQAModel:
             else:
                 if config.load_best_model and os.path.exists(path):
                     print('------------  load model  ------------')
-                    # print(tf.train.latest_checkpoint(path + '/fold_0'))
-                    saver.restore(self.sess, tf.train.latest_checkpoint(path))
+                    print('epoch5_acc0.7289_fscore0.7043.model')
+                    saver.restore(self.sess, os.path.join(path, 'epoch5_acc0.7289_fscore0.7043.model'))
                 if not os.path.exists(path):
                     os.mkdir(path)
                 writer = tf.summary.FileWriter(path)
