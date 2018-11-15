@@ -4,6 +4,7 @@ from .CQAModel import CQAModel
 from layers.BiGRU import NativeGRU as BiGRU
 import keras.losses
 
+
 class Baseline2(CQAModel):
     def build_model(self):
         with tf.variable_scope('baseline', initializer=tf.glorot_uniform_initializer()):
@@ -20,11 +21,11 @@ class Baseline2(CQAModel):
                 C_sequence = rnn(C, seq_len=C_len, return_type=1)
 
             with tf.variable_scope('conv'):
-                Q_conv = tf.layers.conv1d(Q_sequence, filters=units, kernel_size=5, name='con1d')
-                C_conv = tf.layers.conv1d(C_sequence, filters=units, kernel_size=5, name='con1d', reuse=True)
+                Q_conv = tf.layers.conv1d(Q_sequence, padding='same', filters=units, kernel_size=5, name='con1d_Q')
+                C_conv = tf.layers.conv1d(C_sequence, padding='same', filters=units, kernel_size=5, name='con1d_C')
 
-                Q_w = tf.layers.conv1d(Q_sequence, filters=1, kernel_size=5, name='con1d_w')
-                C_w = tf.layers.conv1d(C_sequence, filters=1, kernel_size=5, name='con1d_w', reuse=True)
+                Q_w = tf.layers.conv1d(Q_sequence, padding='same', filters=1, kernel_size=5, name='con1d_wQ')
+                C_w = tf.layers.conv1d(C_sequence, padding='same', filters=1, kernel_size=5, name='con1d_wC')
                 Q_w = tf.nn.softmax(Q_w, axis=1)
                 C_w = tf.nn.softmax(C_w, axis=1)
                 # Q_w = tf.squeeze(Q_w, axis=-1)

@@ -393,3 +393,168 @@ def eval_reranker(eval_id, label, score, matrix,
     print('----------------------------------------------------------------\n')
 
 
+class BatchDatasetsMargin:
+    def __init__(self,  qs_max_len, qb_max_len, ct_max_len, char_max_len,
+                 need_shuffle=False, use_char_level=True, batch_size=64, k_fold=0, categories_num=3,
+                 train_samples: list=None, dev_samples: list=None, test_samples=None):
+        self.train_samples = self.processing_sample(train_samples)
+        self.dev_samples = self.processing_sample(dev_samples)
+        self.test_samples = self.processing_sample(test_samples)
+        self.qs_max_len = qs_max_len
+        self.qb_max_len = qb_max_len
+        self.ct_max_len = ct_max_len
+        self.length = [self.qs_max_len, self.qb_max_len, self.ct_max_len]
+        self.char_max_len = char_max_len
+        self.need_shuffle = need_shuffle
+        self.use_char_level = use_char_level
+        self.batch_size = batch_size
+        self.train_samples_num = len(self.train_samples)
+        self.dev_samples_num = len(self.dev_samples)
+        self.k_fold = k_fold
+        self.categories_num = categories_num
+        self.train_steps_num = 0
+        self.dev_steps_num = 0
+        self.test_steps_num = 0
+        self.train_data = None
+        self.train_label = None
+        self.cweight = []
+        self.dev_data = None
+        self.dev_label = None
+        self.dev_cID = None
+
+        self.temp_array = np.asarray([[1, 0], [0, 1]])
+
+        if train_samples is not None and dev_samples is not None:
+            if k_fold > 1:  # merge train data and dev data
+                self.train_samples += self.dev_samples
+                self.train_samples = [trans for trans in zip(*self.train_samples)]
+                self.data_cID = np.asarray(self.train_samples[0])
+                self.data = [np.asarray(trans) for trans in self.train_samples[1:-2]]
+                self.label = self.label_tranformer(np.asarray(self.train_samples[-2]))
+                self.qcategory = np.asarray(self.train_samples[-1])
+                skf = StratifiedKFold(n_splits=k_fold, random_state=0)
+                self.index_list = [index for index in skf.split(self.data[0], self.label.argmax(axis=1))]
+
+            else:
+                if self.need_shuffle:
+                    self.shuffle()
+                self.train_samples = [trans for trans in zip(*self.train_samples)]
+                self.train_data = self.train_samples[1:-2]
+                self.train_label = self.label_tranformer(np.asarray(self.train_samples[-2]))
+                self.train_qcategory = np.asarray(self.train_samples[-1])
+
+                self.dev_samples = [trans for trans in zip(*self.dev_samples)]
+                self.dev_cID = self.dev_samples[0]
+                self.dev_data = self.dev_samples[1:-2]
+                self.dev_label = self.label_tranformer(np.asarray(self.dev_samples[-2]))
+                self.dev_qcategory = np.asarray(self.dev_samples[-1])
+
+        if test_samples is not None:
+            self.test_samples = [trans for trans in zip(*self.test_samples)]
+            self.test_cID = self.test_samples[0]
+            self.test_data = self.test_samples[1:-2]
+            self.test_label = self.label_tranformer(np.asarray(self.test_samples[-2]))
+            self.test_qcategory = np.asarray(self.train_samples[-1])
+
+    @staticmethod
+    def processing_sample(samples_list):
+        if samples_list is None or len(samples_list) == 0:
+            return None
+
+        new_samples = []
+        for samples in samples_list:
+            new_samples += samples
+
+        return new_samples
+
+    def shuffle(self):
+        random.shuffle(self.train_samples)
+
+    def get_len(self, e, max_len):
+        return min(len(max(e, key=len)), max_len)
+
+    @staticmethod
+    def pad_sentence(e, maxlen):
+        return pad_sequences(e, padding='post', truncating='post', maxlen=maxlen)
+
+    def padding(self, batch_data):
+        if len(batch_data) == 6:
+            cur_max_len = [self.get_len(e, self.length[i]) for i, e in enumerate(batch_data[0:3])]
+            if self.use_char_level:
+                cur_max_len *= 2
+            else:
+                batch_data = batch_data[:3]
+            return [self.pad_sentence(e, maxlen=l) for e, l in zip(batch_data, cur_max_len)]
+        else:
+            lengthes = [self.length[0] + self.length[1], self.length[2]]
+            cur_max_len = [self.get_len(e, lengthes[i]) for i, e in enumerate(batch_data[0:2])]
+            if self.use_char_level:
+                cur_max_len *= 2
+            else:
+                batch_data = batch_data[:2]
+            return [self.pad_sentence(e, maxlen=l) for e, l in zip(batch_data, cur_max_len)]
+
+    def mini_batch_data(self, data, label, category, batch_size):
+        data_size = label.shape[0]
+        for batch_start in np.arange(0, data_size, batch_size):
+            batch_data = [e[batch_start:batch_start+batch_size]
+                          for e in data]
+            batch_label = label[batch_start:batch_start+batch_size]
+            batch_category = category[batch_start:batch_start+batch_size]
+
+            yield self.padding(batch_data) + [batch_label, batch_category]
+
+    def compute_class_weight(self, train_label):
+        label = train_label.argmax(axis=1)
+        number = [(label == i).astype('int32').sum() for i in range(self.categories_num)]
+
+        max_num = max(number)
+        min_num = min(number)
+        median = max_num
+        for n in number:
+            if n != max_num and n != min_num:
+                median = n
+
+        return [median/n for n in number]
+
+    def batch_train_data(self, batch_size=None, fold_num=None):
+        if self.k_fold > 1:
+            train_index, dev_index = self.index_list[fold_num]
+            self.train_data = [list(element[train_index]) for element in self.data]
+            self.train_label = self.label[train_index]
+            self.train_qcategory = self.qcategory[train_index]
+
+            self.dev_data = [list(element[dev_index]) for element in self.data]
+            self.dev_label = self.label[dev_index]
+            self.dev_qcategory = self.qcategory[dev_index]
+            self.dev_cID = self.data_cID[dev_index].tolist()
+
+        self.train_steps_num = self.train_label.shape[0]
+        self.cweight = self.compute_class_weight(self.train_label)
+
+        batch_size = self.batch_size if batch_size is None else batch_size
+        return self.mini_batch_data(self.train_data, self.train_label, self.train_qcategory, batch_size)
+
+    def batch_dev_data(self, dev_batch_size=None):
+        if dev_batch_size is None:
+            dev_batch_size = self.batch_size
+
+        self.dev_steps_num = self.dev_label.shape[0]
+
+        return self.mini_batch_data(self.dev_data, self.dev_label, self.dev_qcategory, dev_batch_size)
+
+    def batch_test_data(self, test_batch_size=None):
+        assert self.test_samples is not None
+        if test_batch_size is None:
+            test_batch_size = self.batch_size
+
+        self.test_steps_num = self.test_label.shape[0]
+
+        return self.mini_batch_data(self.test_data, self.test_label, self.test_qcategory, test_batch_size)
+
+    def label_tranformer(self, batch_label: np.ndarray):
+        # label 0 stands for 'Good', label 1 stands for 'Bad'
+        if self.categories_num == 3:
+            return batch_label
+        new_label = (batch_label.argmax(axis=1) != 0).astype('int32')
+        return self.temp_array[new_label]

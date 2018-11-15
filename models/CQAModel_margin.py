@@ -23,7 +23,6 @@ class CQAModel:
         tf.set_random_seed(seed)
 
         # hyper parameters and neccesary info
-        print(embedding_matrix.shape)
         self._is_train = tf.get_variable('is_train', shape=[], dtype=tf.bool, trainable=False)
         self.word_mat = tf.get_variable('word_mat',
                                         initializer=tf.constant(embedding_matrix, dtype=tf.float32),
@@ -32,6 +31,8 @@ class CQAModel:
                                             initializer=tf.constant_initializer(0), trainable=False)
         self.dropout_keep_prob = tf.get_variable('dropout', shape=[], dtype=tf.float32,
                                                  initializer=tf.constant_initializer(1), trainable=False)
+        self.margin = tf.get_variable('margin', shape=[], dtype=tf.float32,
+                                      initializer=tf.constant_initializer(1))
         self._lr = tf.get_variable('lr', shape=[], dtype=tf.float32,
                                    initializer=tf.constant_initializer(0.001), trainable=False)
         self._cweight = tf.get_variable('cweight', dtype=tf.float32,
@@ -39,50 +40,20 @@ class CQAModel:
                                         trainable=False)
         self.args = args
         self.char_num = char_num
-        self.N = None
 
         # batch input
-        self.inputs = self.QSubject, self.QBody, self.CText, \
-            self.cQS, self.cQB, self.cC, self.Qcategory = self.create_input()
+        self.inputs = self.Q, self.CText_pos, self.CText_neg,\
+            self.cQ, self.cC_pos, self.cC_neg, self.Qcategory = self.create_input()
         self.inputs = self.inputs[:-1]
 
-        # preparing mask and length info
-        self.QS_mask = tf.cast(tf.cast(self.QSubject, tf.bool), tf.float32)
-        self.QB_mask = tf.cast(tf.cast(self.QBody, tf.bool), tf.float32) if not self.args.concat_q else None
-        self.CT_mask = tf.cast(tf.cast(self.CText, tf.bool), tf.float32)
-
-        self.QS_len = tf.reduce_sum(tf.cast(self.QS_mask, tf.int32), axis=1)
-        self.QB_len = tf.reduce_sum(tf.cast(self.QB_mask, tf.int32), axis=1) if not self.args.concat_q else None
-        self.CT_len = tf.reduce_sum(tf.cast(self.CT_mask, tf.int32), axis=1)
-        self.QS_maxlen = tf.reduce_max(self.QS_len)
-        self.QB_maxlen = tf.reduce_max(self.QB_len) if not self.args.concat_q else None
-        self.CT_maxlen = tf.reduce_max(self.CT_len)
-
-        self.N = tf.shape(self.QS_mask)[0]
-
-        if self.args.use_char_level:
-            self.cQS_len = tf.reshape(tf.reduce_sum(
-                tf.cast(tf.cast(self.cQS, tf.bool), tf.int32), axis=2), [-1])
-            self.cQB_len = tf.reshape(tf.reduce_sum(
-                tf.cast(tf.cast(self.cQB, tf.bool), tf.int32), axis=2), [-1]) if not self.args.concat_q else None
-            self.cC_len = tf.reshape(tf.reduce_sum(
-                tf.cast(tf.cast(self.cC, tf.bool), tf.int32), axis=2), [-1])
-
-        # embedding word vector and char vector
-        self.QS, self.QB, self.CT, self.cate_f = self.embedding()
-
-        # building model
-        self.output = self.build_model()
-
-        # getting label
-        self.label = self.create_label()
+        # build model
+        score_pos = self.network(self.Q, self.CText_pos, self.cQ, self.cC_pos, self.Qcategory)
+        score_neg = self.network(self.Q, self.CText_neg, self.cQ, self.cC_neg, self.Qcategory)
 
         # computing loss
         with tf.variable_scope('predict'):
-            self.predict_prob = tf.nn.softmax(self.output, axis=1)
-            weight = tf.get_variable('weight', shape=[2], dtype=tf.float32, trainable=False)
-            losses = tf.nn.softmax_cross_entropy_with_logits(labels=self.label, logits=self.output)
-            self.loss = tf.reduce_mean(losses)
+            self.cost = tf.maximum(0., self.margin + score_neg - score_pos)
+            self.loss = tf.reduce_mean(self.cost)
             if self.args.l2_weight != 0:
                 for v in tf.trainable_variables():
                     self.loss += self.args.l2_weight * tf.nn.l2_loss(v)
@@ -91,7 +62,7 @@ class CQAModel:
         self.count()
 
         # getting ready for training
-        # self.opt = tf.train.AdagradOptimizer(learning_rate=self._lr)
+        # tf.train.AdagradOptimizer(learning_rate=self._lr)
         self.opt = tf.train.AdamOptimizer(learning_rate=self._lr, epsilon=1e-6)
         grads = self.opt.compute_gradients(self.loss)
         gradients, variables = zip(*grads)
@@ -99,7 +70,36 @@ class CQAModel:
         self.train_op = self.opt.apply_gradients(zip(capped_grads, variables),
                                                  global_step=self._global_step)
 
-        self.input_placeholder = [inp for inp in self.inputs if inp is not None] + [self.label, self.Qcategory]
+        self.train_input_placeholder = [inp for inp in self.inputs if inp is not None] + [self.Qcategory]
+        self.test_input_placeholder = [self.Q, self.CText_pos, self.cQ, self.cC_pos, self.Qcategory]
+
+    def network(self, Q, C, cQ=None, cC=None, Qcategory=None):
+        # preparing mask and length info
+        Q_mask = tf.cast(tf.cast(Q, tf.bool), tf.float32)
+        C_mask = tf.cast(tf.cast(C, tf.bool), tf.float32)
+
+        Q_len = tf.reduce_sum(tf.cast(Q_mask, tf.int32), axis=1)
+        C_len = tf.reduce_sum(tf.cast(C_mask, tf.int32), axis=1)
+        Q_maxlen = tf.reduce_max(Q_len)
+        C_maxlen = tf.reduce_max(C_len)
+
+        N = Q_mask.get_shape()[0]
+
+        if self.args.use_char_level:
+            cQ_len = tf.reshape(tf.reduce_sum(
+                tf.cast(tf.cast(cQ, tf.bool), tf.int32), axis=2), [-1])
+            cC_len = tf.reshape(tf.reduce_sum(
+                tf.cast(tf.cast(cC, tf.bool), tf.int32), axis=2), [-1])
+        else:
+            cQ_len = None
+            cC_len = None
+
+        # embedding word vector and char vector
+        Q, C = self.embedding(Q, C, Q_maxlen, C_maxlen, cQ, cC, cQ_len, cC_len, N)
+
+        # building model
+        with tf.variable_scope('build_model'):
+            return self.build_model(Q, C, Q_mask, C_mask, Q_len, C_len)
 
     def weight_cross_entropy_with_logits(self):
         # alpha = tf.multiply(tf.cast(self.label, tf.float32), tf.expand_dims(self._cweight, axis=0))
@@ -110,16 +110,16 @@ class CQAModel:
         return -tf.reduce_sum(info, axis=1)
 
     def create_input(self):
-        qs = tf.placeholder(tf.int32, [None, None])
-        qb = tf.placeholder(tf.int32, [None, None]) if not self.args.concat_q else None
-        c = tf.placeholder(tf.int32, [None, None])
-        inputs = [qs, qb, c]
+        q = tf.placeholder(tf.int32, [None, None])
+        c_pos = tf.placeholder(tf.int32, [None, None])
+        c_neg = tf.placeholder(tf.int32, [None, None])
+        inputs = [q, c_pos, c_neg]
 
         if self.args.use_char_level:
-            cqs = tf.placeholder(tf.int32, [None, None, None])
-            cqb = tf.placeholder(tf.int32, [None, None, None]) if not self.args.concat_q else None
-            cc = tf.placeholder(tf.int32, [None, None, None])
-            inputs += [cqs, cqb, cc]
+            cq = tf.placeholder(tf.int32, [None, None, None])
+            cc_pos = tf.placeholder(tf.int32, [None, None, None])
+            cc_neg = tf.placeholder(tf.int32, [None, None, None])
+            inputs += [cq, cc_pos, cc_neg]
         else:
             inputs += [None] * 3
 
@@ -127,62 +127,45 @@ class CQAModel:
 
         return inputs + [category]
 
-    def embedding(self):
+    def embedding(self, Q, C, Q_maxlen, C_maxlen, cQ, cC, cQ_len, cC_len, N):
         # word embedding
         with tf.variable_scope('emb'):
-            QS = tf.nn.embedding_lookup(self.word_mat, self.QSubject)
-            QB = tf.nn.embedding_lookup(self.word_mat, self.QBody) if not self.args.concat_q else None
-            CT = tf.nn.embedding_lookup(self.word_mat, self.CText)
+            Q = tf.nn.embedding_lookup(self.word_mat, Q)
+            C = tf.nn.embedding_lookup(self.word_mat, C)
 
-            embedded = [QS, QB, CT]
+            embedded = [Q, C]
 
             if self.args.use_char_level:
-                with tf.variable_scope('char', initializer=tf.glorot_uniform_initializer()):
+                with tf.variable_scope('char', initializer=tf.glorot_uniform_initializer(), reuse=True) as scope:
                     char_mat = tf.get_variable('char_mat', shape=(self.char_num + 1, self.args.char_dim),
                                                initializer=tf.glorot_uniform_initializer())
 
-                    cQS = tf.reshape(tf.nn.embedding_lookup(char_mat, self.cQS),
-                                     [self.N * self.QS_maxlen, self.args.char_max_len, self.args.char_dim])
-                    cQB = tf.reshape(tf.nn.embedding_lookup(char_mat, self.cQB),
-                                     [self.N * self.QB_maxlen, self.args.char_max_len, self.args.char_dim]) \
-                        if not self.args.concat_q else None
-                    cC = tf.reshape(tf.nn.embedding_lookup(char_mat, self.cC),
-                                    [self.N * self.CT_maxlen, self.args.char_max_len, self.args.char_dim])
+                    cQ = tf.reshape(tf.nn.embedding_lookup(char_mat, cQ),
+                                     [N * Q_maxlen, self.args.char_max_len, self.args.char_dim])
+                    cC = tf.reshape(tf.nn.embedding_lookup(char_mat, cC),
+                                    [N * C_maxlen, self.args.char_max_len, self.args.char_dim])
 
                     char_hidden = 8
-                    cell_fw = tf.nn.rnn_cell.GRUCell(char_hidden)
-                    cell_bw = tf.nn.rnn_cell.GRUCell(char_hidden)
+                    cell_fw = tf.nn.rnn_cell.GRUCell(char_hidden, name='Qcell_fw', reuse=True)
+                    cell_bw = tf.nn.rnn_cell.GRUCell(char_hidden, name='Qcell_bw', reuse=True)
 
                     _, (state_fw, state_bw) = tf.nn.bidirectional_dynamic_rnn(
-                        cell_fw, cell_bw, cQS, self.cQS_len, dtype=tf.float32)
-                    cQS_emb = tf.reshape(tf.concat([state_fw, state_bw], axis=1),
-                                         [self.N, self.QS_maxlen, 2 * char_hidden])
-                    if not self.args.concat_q:
-                        _, (state_fw, state_bw) = tf.nn.bidirectional_dynamic_rnn(
-                            cell_fw, cell_bw, cQB, self.cQB_len, dtype=tf.float32)
-                        cQB_emb = tf.reshape(tf.concat([state_fw, state_bw], axis=1),
-                                             [self.N, self.QB_maxlen, 2 * char_hidden])
-                    else:
-                        cQB_emb = None
+                        cell_fw, cell_bw, cQ, cQ_len, dtype=tf.float32, scope=scope)
+                    cQ_emb = tf.reshape(tf.concat([state_fw, state_bw], axis=1),
+                                        [N, Q_maxlen, 2 * char_hidden])
 
+                    cell_fw = tf.nn.rnn_cell.GRUCell(char_hidden, name='Ccell_fw', reuse=True)
+                    cell_bw = tf.nn.rnn_cell.GRUCell(char_hidden, name='Ccell_bw', reuse=True)
                     _, (state_fw, state_bw) = tf.nn.bidirectional_dynamic_rnn(
-                        cell_fw, cell_bw, cC, self.cC_len, dtype=tf.float32)
+                        cell_fw, cell_bw, cC, cC_len, dtype=tf.float32, scope=scope)
                     cC_emb = tf.reshape(tf.concat([state_fw, state_bw], axis=1),
-                                        [self.N, self.CT_maxlen, 2 * char_hidden])
+                                        [N, C_maxlen, 2 * char_hidden])
 
-                    char_embedded = [cQS_emb, cQB_emb, cC_emb]
-                    embedded = [tf.concat([a, b], axis=2) if a is not None and b is not None else None
+                    char_embedded = [cQ_emb, cC_emb]
+                    embedded = [tf.concat([a, b], axis=2)
                                 for a, b in zip(embedded, char_embedded)]
 
-            # category
-            category_mat = tf.get_variable('cate_mat', shape=[33, 25], dtype=tf.float32,
-                                           initializer=tf.glorot_uniform_initializer(), trainable=False)
-            cate_f = tf.nn.embedding_lookup(category_mat, self.Qcategory)
-
-            return embedded + [cate_f]
-
-    def create_label(self):
-        return tf.placeholder(tf.int32, [None, self.args.categories_num])
+            return embedded
 
     @property
     def cweight(self):
@@ -228,7 +211,7 @@ class CQAModel:
         assert isinstance(value, bool)
         self.sess.run(tf.assign(self._is_train, tf.constant(value, dtype=tf.bool)))
 
-    def build_model(self):
+    def build_model(self, Q, C, Q_mask, C_mask, Q_len, C_len):
         raise NotImplementedError
 
     def evaluate(self, eva_data, steps_num, eva_type, eva_ID=None):
@@ -372,7 +355,8 @@ class CQAModel:
             else:
                 if config.load_best_model and os.path.exists(path):
                     print('------------  load model  ------------')
-                    saver.restore(self.sess, tf.train.latest_checkpoint(path))
+                    print('epoch5_acc0.7289_fscore0.7043.model')
+                    saver.restore(self.sess, os.path.join(path, 'epoch5_acc0.7289_fscore0.7043.model'))
                 if not os.path.exists(path):
                     os.mkdir(path)
                 writer = tf.summary.FileWriter(path)

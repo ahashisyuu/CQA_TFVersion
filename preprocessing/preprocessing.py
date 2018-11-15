@@ -13,23 +13,35 @@ from keras.preprocessing.sequence import pad_sequences
 nlp = spacy.load('en')
 relevance2label = {'Good': 0, 'PotentiallyUseful': 1, 'Bad': 2}
 char2index = {key: value+1 for value, key in enumerate(string.ascii_letters + string.digits + string.punctuation)}
-char2index['<split>'] = len(char2index) + 1
+char2index['//'] = len(char2index) + 1
 
 Qcategory_dic = {}
 
 
 def load_glove(filename):
-    print('\nload word dictionary starting!')
-    word_dic = {}
-    with open(filename, encoding='utf-8') as fr:
-        lines = [line for line in fr]
-        for line in lines:
-            values = line.split()
-            word = values[0]
-            coefs = np.asarray(values[1:], dtype='float32')
-            word_dic[word] = coefs
+    '''
 
-    print('load word dictionary ending!\n')
+    2018-11-14: add supporting word2vector
+
+    '''
+    word_dic = {}
+    if 'glove' in filename:
+        print('\nload word dictionary starting!')
+
+        with open(filename, encoding='utf-8') as fr:
+            lines = [line for line in fr]
+            for line in lines:
+                values = line.split()
+                word = values[0]
+                coefs = np.asarray(values[1:], dtype='float32')
+                word_dic[word] = coefs
+
+        print('load word dictionary ending!\n')
+    else:
+        print('\nload word dictionary starting!')
+        with open(filename, 'rb') as fr:
+            word_dic = pkl.load(fr, encoding='bytes')
+        print('load word dictionary ending!\n')
 
     return word_dic
 
@@ -161,6 +173,9 @@ def is_atperson(w):
         return False
 
 
+unk_dic = {}
+
+
 def check_word(text, word_vector_keys, concat_q):
     new_text = []
     for word in text:
@@ -189,7 +204,12 @@ def check_word(text, word_vector_keys, concat_q):
             #         fine_text.append(w_fine)
             #     elif i>0 and fine_text[i-1] is '<unk>':
             #         fine_text.append('<unk>')
+            # if word in unk_dic:
+            #     unk_dic[word] += 1
+            # else:
+            #     unk_dic[word] = 1
             new_text.append('<unk>')
+            # new_text.append(w)
     if len(new_text) == 0 and not concat_q:
         raise ValueError('Existing blank sentence')
     return new_text
@@ -232,9 +252,9 @@ def process_sample(sample, word_count, char_max_len, word_vector_keys, need_punc
     char_cTEXT = pad_sequences(char_cTEXT, maxlen=char_max_len, padding='post', truncating='post')
 
     if concat_q:
-        q_sent = qsubject_sent + ['<split>'] + qbody_sent
-        count_word_number(word_count, ['<split>'])
-        split = np.asarray([[char2index['<split>']]*char_max_len])
+        q_sent = qsubject_sent + ['//'] + qbody_sent
+        count_word_number(word_count, ['//'])
+        split = np.asarray([[char2index['//']]*char_max_len])
         char_q = np.concatenate([char_qsubject, split, char_qbody], axis=0)
         return cID, q_sent, cTEXT_sent, char_q, char_cTEXT, Relevance, category2index(qcategory)
     return cID, qsubject_sent, qbody_sent, cTEXT_sent, \
@@ -301,12 +321,18 @@ def preprocessing(filepath, savepath, char_max_len, need_punct=False, num=0, con
 
     print('\n--------------------------------------')
     print('\tthe number of qcategory: %d\n' % len(Qcategory_dic))
-    with open(os.path.join(savepath, 'Qcategory_dic.pkl'), 'wb') as fw:
-        pkl.dump(Qcategory_dic, fw)
+    with open(os.path.join(savepath, 'Qcategory_dic.json'), 'w') as fw:
+        json.dump(Qcategory_dic, fw)
+
+    print('\n--------------------------------------')
+    print('\tthe number of unk: %d\n' % len(unk_dic))
+    with open(os.path.join(savepath, 'unk_dic.json'), 'w') as fw:
+        json.dump(unk_dic, fw)
 
     print('\n--------------------------------------')
     print('\t作嵌入矩阵并保存\n')
-    embedding_matrix = np.zeros((len(word2index) + 1, 300))
+    dim = word_vector['word'].shape[0]
+    embedding_matrix = np.zeros((len(word2index) + 1, dim))
     for word, index in word2index.items():
         if word in word_vector:
             embedding_matrix[index] = word_vector[word]

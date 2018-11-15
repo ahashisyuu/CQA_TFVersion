@@ -1,25 +1,22 @@
+# -*- utf-8 -*-
 import json
 import os
+# import gensim
+import pickle as pkl
+import numpy as np
 import tensorflow as tf
 
-# path = 'E:/tensorflow_workspace/QATAR_word2vec/semeval-2016_2017-task3-subtaskA-unannotated-english.json'
+path = 'E:/tensorflow_workspace/QATAR_word2vec/' \
+       'qatarliving_qc_size200_win5_mincnt1_rpl_skip3_phrFalse_2016_02_25.word2vec'
+
+filename = os.path.join(path, 'qatarliving_qc_size200_win5_mincnt1_rpl_skip3'
+                              '_phrFalse_2016_02_25.word2vec.bin.syn0.npy')
+
+# model = gensim.models.Word2Vec.load(filename)
+# print(model.most_similar(positive=['woman', 'king'], negative=['man'], topn=1))
 #
-# with open(os.path.join(path, 'semeval-2016_2017-task3-subtaskA-unannotated-english.json')) as fr, \
-#          open('view.json', 'w') as fw:
-#     data = json.load(fr)
-#     for line in data[:1]:
-#         json.dump(line, fw)
-#         fw.write('\n')
-
-sess = tf.Session()
-a = tf.constant([[0.3, 0.5, 0.2], [0.1, 0.4, 0.5]])
-b, indices = tf.nn.top_k(a, 2)
-c = tf.gather(a, indices, axis=1)
-
-print(sess.run(b))
-print(sess.run(indices))
-print(sess.run(c))
-
-
-
+# print(model['qatar'])
+print(np.array([0., 100.23456789101112]))
+data = np.load(filename)
+print(data)
 
